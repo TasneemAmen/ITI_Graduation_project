@@ -2,7 +2,7 @@
 
 ## Overview
 
-**LTE KPI Degradation Analyzer** is a desktop GUI tool developed for the ITI Graduation Project 2026 by **Musketeers Team**.
+**LTE KPI Degradation Analyzer** is a desktop GUI tool developed for the ITI Graduation Project 2026.
 
 The tool helps RF optimization and telecom data analytics engineers analyze LTE network KPI degradation using a data-driven and rule-based approach.
 
@@ -341,38 +341,6 @@ The tool will analyze all configured KPIs using each KPI default threshold.
 
 ---
 
-## How to Build `.exe`
-
-Install PyInstaller:
-
-```bash
-py -m pip install pyinstaller
-```
-
-Build the executable:
-
-```bash
-py -m PyInstaller --onefile --windowed --name LTE_KPI_Analyzer LTE_KPI_Degradation_Analyzer.py
-```
-
-The generated `.exe` file will be located in:
-
-```text
-dist/LTE_KPI_Analyzer.exe
-```
-
----
-
-## Build `.exe` with Icon
-
-If you have an icon file named `app_icon.ico`, place it beside the Python file and run:
-
-```bash
-py -m PyInstaller --onefile --windowed --name LTE_KPI_Analyzer --icon=app_icon.ico LTE_KPI_Degradation_Analyzer.py
-```
-
----
-
 ## Debugging Tips
 
 If no degraded cells appear:
@@ -454,7 +422,11 @@ This supports faster troubleshooting, better decision-making, and a more data-dr
 Developed by:
 
 ```text
-Musketeers Team
+Mahmoud Ashraf
+Ibrahim samy
+Mohab Tarek
+Khaled Mogahed
+Tasneem Amein
 ITI Graduation Project 2026
 Telco Cloud Track
 ```
