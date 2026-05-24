@@ -1,19 +1,7 @@
 # ============================================================
 # LTE KPI Degradation Analyzer - Desktop GUI Version
 # ============================================================
-# This version does NOT use Streamlit.
-# It uses Tkinter, so it can be converted to a Windows .exe file.
-#
-# How to run:
-# py -m pip install -r requirements.txt
-# py LTE_KPI_Degradation_Analyzer.py
-#
-# How to build .exe:
-#   py -m PyInstaller --onefile --windowed --name LTE_KPI_Analyzer --icon=app_icon.ico LTE_KPI_Degradation_Analyzer.py
-#
-# Output:
-#   CSV file for the selected KPI with degraded cells, causes, and actions.
-# ============================================================
+
 import os
 import threading
 import tkinter as tk
