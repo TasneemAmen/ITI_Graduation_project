@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 -->
+
 # LTE KPI Degradation Analyzer
 
 ## Overview
@@ -124,14 +126,14 @@ The tool returns:
 
 The tool provides rule-based optimization recommendations according to the detected root cause.
 
-| Root Cause | Recommended Action |
-|---|---|
-| DL congestion | Check PRB utilization, load balancing, CA, bandwidth, and capacity expansion |
-| Poor radio quality | Check CQI, interference, PCI, antenna tilt, azimuth, and coverage |
-| Availability issue | Check alarms, S1 issue, power issue, transmission, and site outage |
-| HO failure | Check neighbors, A3 offset, CIO, TTT, PCI, and target coverage |
-| CSFB issue | Check 2G/3G neighbors, redirection, target RAT coverage, and CSFB configuration |
-| VoLTE issue | Check VoLTE traffic, QCI-1/QCI-7, SRVCC, IMS service, and bearer drops |
+| Root Cause         | Recommended Action                                                              |
+| ------------------ | ------------------------------------------------------------------------------- |
+| DL congestion      | Check PRB utilization, load balancing, CA, bandwidth, and capacity expansion    |
+| Poor radio quality | Check CQI, interference, PCI, antenna tilt, azimuth, and coverage               |
+| Availability issue | Check alarms, S1 issue, power issue, transmission, and site outage              |
+| HO failure         | Check neighbors, A3 offset, CIO, TTT, PCI, and target coverage                  |
+| CSFB issue         | Check 2G/3G neighbors, redirection, target RAT coverage, and CSFB configuration |
+| VoLTE issue        | Check VoLTE traffic, QCI-1/QCI-7, SRVCC, IMS service, and bearer drops          |
 
 ---
 
@@ -187,13 +189,13 @@ Thresholds are configurable and stored inside the code under `KPI_CONFIGS`.
 
 The current thresholds are initial engineering thresholds, not fixed telecom-standard values.
 
-| KPI Type | Suggested Sensitivity |
-|---|---|
-| Traffic KPIs | Higher threshold because traffic naturally changes |
-| Throughput KPIs | Medium threshold because throughput is sensitive |
-| Success Rate KPIs | Lower threshold because small drops can be serious |
-| Drop Rate KPIs | Medium threshold because increase means degradation |
-| Availability | Very low threshold because availability is critical |
+| KPI Type          | Suggested Sensitivity                               |
+| ----------------- | --------------------------------------------------- |
+| Traffic KPIs      | Higher threshold because traffic naturally changes  |
+| Throughput KPIs   | Medium threshold because throughput is sensitive    |
+| Success Rate KPIs | Lower threshold because small drops can be serious  |
+| Drop Rate KPIs    | Medium threshold because increase means degradation |
+| Availability      | Very low threshold because availability is critical |
 
 Example:
 
@@ -355,18 +357,18 @@ If no degraded cells appear:
 
 Recommended testing values:
 
-| KPI | Test Threshold |
-|---|---:|
-| DL Traffic | 5-10% |
-| UL Traffic | 5-10% |
-| DL Throughput | 5-10% |
-| UL Throughput | 5-10% |
-| RRC Setup SR | 1-3% |
-| ERAB Setup SR | 1-3% |
-| HO Success Rate | 1-3% |
-| RACH Success Rate | 1-3% |
-| Availability | 0.5-1% |
-| CSFB KPI | 1-5% |
+| KPI               | Test Threshold |
+| ----------------- | -------------: |
+| DL Traffic        |          5-10% |
+| UL Traffic        |          5-10% |
+| DL Throughput     |          5-10% |
+| UL Throughput     |          5-10% |
+| RRC Setup SR      |           1-3% |
+| ERAB Setup SR     |           1-3% |
+| HO Success Rate   |           1-3% |
+| RACH Success Rate |           1-3% |
+| Availability      |         0.5-1% |
+| CSFB KPI          |           1-5% |
 
 ---
 
