@@ -1,0 +1,230 @@
+# ============================================================
+# LTE KPI Degradation Analyzer - Clean Excel and Helper Functions
+# ============================================================
+# This file contains helper functions for data cleaning and processing.
+# ============================================================
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+
+# ============================================================
+# DATA CLEANING FUNCTIONS
+# ============================================================
+
+def clean_excel_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean Excel column names from spaces and hidden line breaks.
+    
+    Args:
+        df: DataFrame with potentially dirty column names
+        
+    Returns:
+        DataFrame with cleaned column names
+    """
+    df = df.copy()
+    cleaned_columns = []
+    for col in df.columns:
+        col = str(col)
+        col = col.replace(chr(10), " ")
+        col = col.replace(chr(13), " ")
+        col = col.strip()
+        cleaned_columns.append(col)
+    df.columns = cleaned_columns
+    return df
+
+
+def normalize_column_name(col) -> str:
+    """
+    Normalize column names for smart matching.
+    Removes spaces, underscores, hyphens, and special characters.
+    
+    Args:
+        col: Column name to normalize
+        
+    Returns:
+        Normalized column name (lowercase, no special chars)
+    """
+    col = str(col).lower()
+    col = col.replace(" ", "")
+    col = col.replace("_", "")
+    col = col.replace("-", "")
+    col = col.replace(chr(10), "")
+    col = col.replace(chr(13), "")
+    col = col.strip()
+    return col
+
+
+def find_matching_column(df: pd.DataFrame, wanted_col: str):
+    """
+    Find real Excel column even if spaces/newlines are different.
+    
+    Uses a three-step matching process:
+    1. Exact match
+    2. Stripped match
+    3. Normalized match (ignoring spaces, underscores, etc.)
+    
+    Args:
+        df: DataFrame to search in
+        wanted_col: Column name to find
+        
+    Returns:
+        Actual column name from DataFrame, or None if not found
+    """
+    if wanted_col in df.columns:
+        return wanted_col
+    for col in df.columns:
+        if str(col).strip() == str(wanted_col).strip():
+            return col
+    wanted_norm = normalize_column_name(wanted_col)
+    for col in df.columns:
+        if normalize_column_name(col) == wanted_norm:
+            return col
+    return None
+
+
+def clean_numeric_series(series: pd.Series) -> pd.Series:
+    """
+    Convert mixed numeric/text column to numeric.
+    
+    Handles common Excel data issues:
+    - Percentage signs
+    - Commas in numbers
+    - N/A, #DIV/0!, #N/A, NIL values
+    - Whitespace
+    
+    Args:
+        series: Series to clean
+        
+    Returns:
+        Cleaned numeric Series
+    """
+    return pd.to_numeric(
+        series.astype(str)
+        .str.replace("%", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.replace("N/A", "", regex=False)
+        .str.replace("#DIV/0!", "", regex=False)
+        .str.replace("#N/A", "", regex=False)
+        .str.replace("NIL", "", regex=False)
+        .str.strip()
+        .replace({"": np.nan, "nan": np.nan, "None": np.nan}),
+        errors="coerce",
+    )
+
+
+# ============================================================
+# CALCULATION FUNCTIONS
+# ============================================================
+
+def calculate_degradation(recent_value, baseline_value, bad_direction):
+    """
+    Calculate degradation percentage.
+    
+    Positive result means degradation (worse performance).
+    
+    Args:
+        recent_value: Current period value
+        baseline_value: Baseline period value
+        bad_direction: 'low' or 'high' - direction that indicates worse performance
+        
+    Returns:
+        Degradation percentage (positive = worse), or np.nan if cannot calculate
+    """
+    if pd.isna(recent_value) or pd.isna(baseline_value):
+        return np.nan
+    if baseline_value == 0:
+        return np.nan
+    if bad_direction == "low":
+        return ((baseline_value - recent_value) / baseline_value) * 100
+    if bad_direction == "high":
+        return ((recent_value - baseline_value) / baseline_value) * 100
+    return np.nan
+
+
+def perform_ttest(recent_values, baseline_values):
+    """
+    Perform Welch's t-test between recent and baseline periods.
+    
+    Uses Welch's t-test (unequal variance) to determine if the
+    difference between periods is statistically significant.
+    
+    Args:
+        recent_values: Series of values from recent period
+        baseline_values: Series of values from baseline period
+        
+    Returns:
+        Tuple of (is_significant, p_value, t_statistic)
+        - is_significant: True if p < 0.05
+        - p_value: Statistical p-value
+        - t_statistic: T-test statistic
+    """
+    try:
+        recent_clean = recent_values.dropna()
+        baseline_clean = baseline_values.dropna()
+        
+        if len(recent_clean) < 2 or len(baseline_clean) < 2:
+            return False, np.nan, np.nan
+        
+        t_stat, p_value = stats.ttest_ind(recent_clean, baseline_clean, equal_var=False)
+        
+        # Significant if p < 0.05
+        is_significant = p_value < 0.05
+        return is_significant, p_value, t_stat
+    except Exception:
+        return False, np.nan, np.nan
+
+
+def get_periods_enhanced(df, date_col, num_days, baseline_mode, 
+                          custom_baseline_start=None, custom_baseline_end=None):
+    """
+    Get analysis periods with configurable baseline window.
+    
+    Supports three baseline modes:
+    - BASELINE_MODE_LAST_WEEK: Same N days from last week
+    - BASELINE_MODE_4WEEK_AVG: 4-week rolling average
+    - BASELINE_MODE_CUSTOM: User-defined date range
+    
+    Args:
+        df: DataFrame with date column
+        date_col: Name of date column
+        num_days: Number of days for recent period
+        baseline_mode: Baseline calculation mode
+        custom_baseline_start: Custom baseline start date (for CUSTOM mode)
+        custom_baseline_end: Custom baseline end date (for CUSTOM mode)
+        
+    Returns:
+        Tuple of (last_date, recent_start, recent_end, baseline_start, baseline_end)
+    """
+    from KPI_Configuration import (
+        BASELINE_MODE_LAST_WEEK,
+        BASELINE_MODE_4WEEK_AVG,
+        BASELINE_MODE_CUSTOM,
+    )
+    
+    # Normalize to date level for hourly data
+    last_date = df[date_col].dt.normalize().max()
+    recent_start = last_date - pd.Timedelta(days=num_days - 1)
+    recent_end = last_date
+    
+    if baseline_mode == BASELINE_MODE_LAST_WEEK:
+        baseline_start = recent_start - pd.Timedelta(days=7)
+        baseline_end = recent_end - pd.Timedelta(days=7)
+        
+    elif baseline_mode == BASELINE_MODE_4WEEK_AVG:
+        baseline_start = recent_start - pd.Timedelta(days=28)
+        baseline_end = recent_start - pd.Timedelta(days=1)
+        
+    elif baseline_mode == BASELINE_MODE_CUSTOM:
+        if custom_baseline_start and custom_baseline_end:
+            baseline_start = pd.Timestamp(custom_baseline_start)
+            baseline_end = pd.Timestamp(custom_baseline_end)
+        else:
+            baseline_start = recent_start - pd.Timedelta(days=7)
+            baseline_end = recent_end - pd.Timedelta(days=7)
+    else:
+        baseline_start = recent_start - pd.Timedelta(days=7)
+        baseline_end = recent_end - pd.Timedelta(days=7)
+    
+    return last_date, recent_start, recent_end, baseline_start, baseline_end
