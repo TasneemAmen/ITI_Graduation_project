@@ -5,6 +5,9 @@
 # Edit this file to add new KPIs or modify existing thresholds.
 # ============================================================
 
+import re
+
+
 # ============================================================
 # GLOBAL COLUMN NAMES
 # ============================================================
@@ -24,6 +27,38 @@ CELL_ID_COLS = [
 BASELINE_MODE_LAST_WEEK = "last_week"
 BASELINE_MODE_4WEEK_AVG = "4week_rolling_avg"
 BASELINE_MODE_CUSTOM = "custom_range"
+
+# ============================================================
+# NEGATIVE VALUE POLICY (unit-aware)
+# ============================================================
+# Negatives are valid only for signal/power metrics (dBm/dB: RSRP, RSRQ,
+# SINR, interference). For counters/volumes/%/throughput a negative is a
+# data glitch and should be filtered. Decision is by column name, so it is
+# correct whether a column is a target or a related feature.
+
+_NEG_KEYWORDS = ("interference", "rsrp", "rsrq", "sinr", "rssi")
+_NEG_UNITS = ("dbm", "db")
+_LAST_PAREN_RE = re.compile(r"\(([^()]+)\)[^()]*$")
+
+# Exact-name overrides for cases the heuristic gets wrong. column -> bool.
+NEGATIVE_VALUE_OVERRIDES = {
+    # "Some Signed Counter": True,
+}
+
+
+def allows_negative(column_name: str) -> bool:
+    """True if negative values are physically valid for this column."""
+    if not isinstance(column_name, str):
+        return False
+    if column_name in NEGATIVE_VALUE_OVERRIDES:
+        return NEGATIVE_VALUE_OVERRIDES[column_name]
+    low = column_name.lower()
+    if any(k in low for k in _NEG_KEYWORDS):
+        return True
+    m = _LAST_PAREN_RE.search(column_name)
+    if m and m.group(1).strip().lower() in _NEG_UNITS:
+        return True
+    return False
 
 
 # ============================================================

@@ -13,6 +13,7 @@ from KPI_Configuration import (
     CELL_COL,
     CELL_ID_COLS,
     KPI_CONFIGS,
+    allows_negative,
 )
 from clean_excel_and_helpers import (
     clean_excel_columns,
@@ -97,7 +98,11 @@ def analyze_selected_kpi(
     df_kpi[DATE_COL] = pd.to_datetime(df_kpi[DATE_COL], errors="coerce").dt.normalize()
     df_kpi[target_kpi] = clean_numeric_series(df_kpi[target_kpi])
     df_kpi = df_kpi.dropna(subset=[DATE_COL, target_kpi])
-    df_kpi = df_kpi[df_kpi[target_kpi] >= 0].copy()
+    # Filter negatives only when the metric unit forbids them (no-op for
+    # all current targets; protects a future RSRP/RSRQ/dBm target).
+    if not allows_negative(target_kpi):
+        df_kpi = df_kpi[df_kpi[target_kpi] >= 0]
+    df_kpi = df_kpi.copy()
     
     # Get periods with enhanced baseline mode
     last_date, recent_start, recent_end, baseline_start, baseline_end = get_periods_enhanced(
