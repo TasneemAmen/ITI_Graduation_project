@@ -30,7 +30,7 @@ def analyze_all_kpis(
         log_callback: Optional callback for logging
         
     Returns:
-        Tuple of (combined_df, outputs_dict, summary_df)
+        Tuple of (combined_df, outputs_dict, summary_df, quarantine_df, incomplete_df)
         - combined_df: Combined DataFrame with all degraded cells
         - outputs_dict: Dictionary of KPI name -> DataFrame
         - summary_df: Summary DataFrame with KPI statistics
@@ -41,6 +41,8 @@ def analyze_all_kpis(
     
     outputs = {}
     summary_records = []
+    quarantine_frames = []
+    incomplete_frames = []
     all_kpi_names = list(KPI_CONFIGS.keys())
     total_kpis = len(all_kpi_names)
     
@@ -63,7 +65,14 @@ def analyze_all_kpis(
                 log_callback=log_callback,
             )
             outputs[kpi_name] = output_df
-            
+
+            q = metadata.get("quarantine_df")
+            if q is not None and not q.empty:
+                quarantine_frames.append(q)
+            inc = metadata.get("incomplete_df")
+            if inc is not None and not inc.empty:
+                incomplete_frames.append(inc)
+
             debug = metadata.get("debug_info", {})
             degraded_count = output_df.shape[0]
             
@@ -99,5 +108,7 @@ def analyze_all_kpis(
     non_empty = [df for df in outputs.values() if df is not None and not df.empty]
     combined = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
     summary_df = pd.DataFrame(summary_records)
-    
-    return combined, outputs, summary_df
+    quarantine_df = pd.concat(quarantine_frames, ignore_index=True) if quarantine_frames else pd.DataFrame()
+    incomplete_df = pd.concat(incomplete_frames, ignore_index=True) if incomplete_frames else pd.DataFrame()
+
+    return combined, outputs, summary_df, quarantine_df, incomplete_df

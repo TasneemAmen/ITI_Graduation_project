@@ -77,6 +77,8 @@ class LTEKPIAnalyzerApp:
         self.degraded_cell_ids = set()
         self.all_outputs = {}
         self.summary_df = None
+        self.quarantine_df = None
+        self.incomplete_df = None
         self.analysis_mode = "single"
         
         # Running state
@@ -373,6 +375,8 @@ class LTEKPIAnalyzerApp:
             self.output_df = output_df
             self.all_outputs = {}
             self.summary_df = None
+            self.quarantine_df = metadata.get("quarantine_df")
+            self.incomplete_df = metadata.get("incomplete_df")
             self.analysis_mode = "single"
             
             # Store degraded cell IDs
@@ -427,7 +431,7 @@ class LTEKPIAnalyzerApp:
             baseline_mode = self.baseline_mode.get()
             enable_sig = bool(self.enable_significance_test.get())
             
-            combined, outputs, summary_df = analyze_all_kpis(
+            combined, outputs, summary_df, quarantine_df, incomplete_df = analyze_all_kpis(
                 df=df,
                 num_days=num_days,
                 require_complete_days=complete_days,
@@ -439,6 +443,8 @@ class LTEKPIAnalyzerApp:
             self.output_df = combined
             self.all_outputs = outputs
             self.summary_df = summary_df
+            self.quarantine_df = quarantine_df
+            self.incomplete_df = incomplete_df
             self.analysis_mode = "all"
             
             # Store degraded cell IDs
@@ -527,7 +533,8 @@ class LTEKPIAnalyzerApp:
             
             success = save_csv_results(
                 self.output_df, self.all_outputs, self.summary_df,
-                self.analysis_mode, self.selected_kpi.get(), save_dir, self.log
+                self.analysis_mode, self.selected_kpi.get(), save_dir, self.log,
+                quarantine_df=self.quarantine_df, incomplete_df=self.incomplete_df,
             )
             if success:
                 messagebox.showinfo("Saved", f"CSV files saved to:\n{save_dir}")
@@ -539,7 +546,8 @@ class LTEKPIAnalyzerApp:
             if save_path:
                 success = save_csv_results(
                     self.output_df, self.all_outputs, self.summary_df,
-                    self.analysis_mode, self.selected_kpi.get(), save_path, self.log
+                    self.analysis_mode, self.selected_kpi.get(), save_path, self.log,
+                    quarantine_df=self.quarantine_df, incomplete_df=self.incomplete_df,
                 )
                 if success:
                     messagebox.showinfo("Saved", f"CSV saved:\n{save_path}")

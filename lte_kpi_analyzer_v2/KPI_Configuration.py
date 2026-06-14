@@ -36,8 +36,6 @@ BASELINE_MODE_CUSTOM = "custom_range"
 # data glitch and should be filtered. Decision is by column name, so it is
 # correct whether a column is a target or a related feature.
 
-_NEG_KEYWORDS = ("interference", "rsrp", "rsrq", "sinr", "rssi")
-_NEG_UNITS = ("dbm", "db")
 _LAST_PAREN_RE = re.compile(r"\(([^()]+)\)[^()]*$")
 
 # Exact-name overrides for cases the heuristic gets wrong. column -> bool.
@@ -46,19 +44,53 @@ NEGATIVE_VALUE_OVERRIDES = {
 }
 
 
+def classify_unit(column_name: str) -> str:
+    """Classify a column by physical unit: 'dbm' | 'db' | 'pct' | 'nonneg'.
+
+    Used by both the negative-value filter and the data-quality validator.
+    """
+    if not isinstance(column_name, str):
+        return "nonneg"
+    low = column_name.lower()
+    if "rsrq" in low or "sinr" in low:
+        return "db"
+    if "rsrp" in low or "rssi" in low or "interference" in low:
+        return "dbm"
+    m = _LAST_PAREN_RE.search(column_name)
+    if m:
+        tok = m.group(1).strip().lower()
+        if tok == "dbm":
+            return "dbm"
+        if tok == "db":
+            return "db"
+        if tok == "%":
+            return "pct"
+    if "%" in column_name:
+        return "pct"
+    return "nonneg"
+
+
 def allows_negative(column_name: str) -> bool:
     """True if negative values are physically valid for this column."""
-    if not isinstance(column_name, str):
-        return False
-    if column_name in NEGATIVE_VALUE_OVERRIDES:
+    if isinstance(column_name, str) and column_name in NEGATIVE_VALUE_OVERRIDES:
         return NEGATIVE_VALUE_OVERRIDES[column_name]
-    low = column_name.lower()
-    if any(k in low for k in _NEG_KEYWORDS):
-        return True
-    m = _LAST_PAREN_RE.search(column_name)
-    if m and m.group(1).strip().lower() in _NEG_UNITS:
-        return True
-    return False
+    return classify_unit(column_name) in ("dbm", "db")
+
+
+# ============================================================
+# DATA QUALITY POLICY
+# ============================================================
+# Vendor "no data / not measured" markers. Kept to UNAMBIGUOUS large markers
+# only, so we never null a real value (e.g. -1 could be a real SINR in dB).
+# Add others (e.g. 9999) ONLY after confirming them in your OSS export.
+SENTINEL_VALUES = (4294967295, 4294967294)
+
+# Missing-day imputation (baseline window only). See data_quality.py.
+IMPUTATION_CONFIG = {
+    "enable_imputation": True,   # master switch
+    "lookback_weeks": 4,         # how many prior same-weekday samples to consider
+    "min_impute_samples": 2,     # need at least this many to impute a day
+}
 
 
 # ============================================================

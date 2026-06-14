@@ -11,7 +11,8 @@ from KPI_Configuration import KPI_CONFIGS
 
 
 def save_csv_results(output_df, all_outputs, summary_df, analysis_mode, selected_kpi, 
-                      save_path_or_dir, log_callback=None):
+                      save_path_or_dir, log_callback=None,
+                      quarantine_df=None, incomplete_df=None):
     """
     Save analysis results to CSV files.
     
@@ -56,6 +57,15 @@ def save_csv_results(output_df, all_outputs, summary_df, analysis_mode, selected
         if summary_df is not None and not summary_df.empty:
             summary_df.to_csv(os.path.join(save_dir, "summary_report.csv"), index=False, encoding="utf-8-sig")
             saved += 1
+
+        if quarantine_df is not None and not quarantine_df.empty:
+            quarantine_df.to_csv(os.path.join(save_dir, "data_quality_quarantine.csv"), index=False, encoding="utf-8-sig")
+            saved += 1
+            log_msg(f"Quarantine: {quarantine_df.shape[0]} invalid counter value(s) flagged")
+        if incomplete_df is not None and not incomplete_df.empty:
+            incomplete_df.to_csv(os.path.join(save_dir, "data_quality_incomplete_cells.csv"), index=False, encoding="utf-8-sig")
+            saved += 1
+            log_msg(f"Incomplete: {incomplete_df.shape[0]} cell-row(s) with missing/insufficient data")
         
         log_msg(f"Saved {saved} files to: {save_dir}")
         return True
@@ -69,4 +79,14 @@ def save_csv_results(output_df, all_outputs, summary_df, analysis_mode, selected
     
     output_df.to_csv(save_path_or_dir, index=False, encoding="utf-8-sig")
     log_msg(f"CSV saved: {save_path_or_dir}")
+
+    out_dir = os.path.dirname(os.path.abspath(save_path_or_dir))
+    if quarantine_df is not None and not quarantine_df.empty:
+        qp = os.path.join(out_dir, f"{prefix}_counter_quarantine.csv")
+        quarantine_df.to_csv(qp, index=False, encoding="utf-8-sig")
+        log_msg(f"Quarantine CSV saved: {qp} ({quarantine_df.shape[0]} rows)")
+    if incomplete_df is not None and not incomplete_df.empty:
+        ip = os.path.join(out_dir, f"{prefix}_incomplete_cells.csv")
+        incomplete_df.to_csv(ip, index=False, encoding="utf-8-sig")
+        log_msg(f"Incomplete-cells CSV saved: {ip} ({incomplete_df.shape[0]} rows)")
     return True
