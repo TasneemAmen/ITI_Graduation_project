@@ -12,3 +12,24 @@ venv/
 all_kpis_combined.csv
 summary_report.csv
 data_quality_*.csv
+
+# Virtual environments
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reports
+*.xlsx
+*.csv
+*.docx
+*.pdf
