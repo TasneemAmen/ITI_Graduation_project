@@ -1,6 +1,17 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated analysis outputs
+*_degraded.csv
+*_counter_quarantine.csv
+*_incomplete_cells.csv
+all_kpis_combined.csv
+summary_report.csv
+data_quality_*.csv
 
 # Virtual environments
 venv/
