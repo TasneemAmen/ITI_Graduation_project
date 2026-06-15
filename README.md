@@ -59,22 +59,22 @@ Our analyzer implements a **three-layer analytical pipeline**:
 ```
 +-------------------------------------------------------------+
 |  LAYER 1: DATA INGESTION & QUALITY ASSURANCE                |
-|  +-- Excel/CSV import with smart column matching             |
-|  +-- Unit-aware validation (negative counters, % bounds)     |
-|  +-- Sentinel value detection (vendor null markers)          |
-|  +-- Baseline gap imputation (same-weekday median)           |
+|  +-- Excel/CSV import with smart column matching            |
+|  +-- Unit-aware validation (negative counters, % bounds)    |
+|  +-- Sentinel value detection (vendor null markers)         |
+|  +-- Baseline gap imputation (same-weekday median)          |
 +-------------------------------------------------------------+
 |  LAYER 2: DEGRADATION DETECTION & STATISTICAL VALIDATION    |
-|  +-- Configurable baseline windows (last week / 4-week avg)  |
-|  +-- Degradation ratio calculation with direction awareness  |
-|  +-- Welch's t-test for statistical significance           |
-|  +-- Minimum baseline value filtering                        |
+|  +-- Configurable baseline windows (last week / 4-week avg) |
+|  +-- Degradation ratio calculation with direction awareness |
+|  +-- Welch's t-test for statistical significance            |
+|  +-- Minimum baseline value filtering                       |
 +-------------------------------------------------------------+
 |  LAYER 3: ROOT CAUSE ANALYSIS & RECOMMENDATION ENGINE       |
-|  +-- Severity-weighted cause scoring (1-5 scale)           |
-|  +-- Multi-cause detection with ranking                    |
-|  +-- Category-based classification (Radio, Capacity, etc.) |
-|  +-- Actionable RF optimization recommendations            |
+|  +-- Severity-weighted cause scoring (1-5 scale)            |
+|  +-- Multi-cause detection with ranking                     |
+|  +-- Category-based classification (Radio, Capacity, etc.)  |
+|  +-- Actionable RF optimization recommendations             |
 +-------------------------------------------------------------+
 ```
 
