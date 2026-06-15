@@ -3,9 +3,14 @@
 # ============================================================
 # This file contains all KPI definitions, thresholds, and rules.
 # Edit this file to add new KPIs or modify existing thresholds.
+# Last Updated: Enhanced with TA Distribution, CEU Metrics, CA Enhanced
 # ============================================================
 
 import re
+import logging
+
+# Configure logging for this module
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -50,6 +55,7 @@ def classify_unit(column_name: str) -> str:
     Used by both the negative-value filter and the data-quality validator.
     """
     if not isinstance(column_name, str):
+        logger.warning(f"Non-string column name: {column_name}, defaulting to 'nonneg'")
         return "nonneg"
     low = column_name.lower()
     if "rsrq" in low or "sinr" in low:
@@ -94,6 +100,66 @@ IMPUTATION_CONFIG = {
 
 
 # ============================================================
+# KPI CONFIGURATION VALIDATION
+# ============================================================
+
+REQUIRED_KPI_FIELDS = [
+    "target_kpi", "bad_direction", "default_threshold",
+    "category", "output_prefix", "min_baseline_value", "related_rules"
+]
+
+REQUIRED_RULE_FIELDS = [
+    "feature", "bad_direction", "threshold", "severity",
+    "category", "reason", "recommended_action"
+]
+
+
+def validate_kpi_configs():
+    """Validate all KPI configurations at startup.
+
+    Returns:
+        bool: True if valid, raises ValueError if errors found.
+    """
+    errors = []
+
+    for kpi_name, config in KPI_CONFIGS.items():
+        # Check required KPI fields
+        for field in REQUIRED_KPI_FIELDS:
+            if field not in config:
+                errors.append(f"KPI '{kpi_name}' missing required field: {field}")
+
+        # Validate min_baseline_value
+        min_val = config.get("min_baseline_value")
+        if min_val is None:
+            errors.append(f"KPI '{kpi_name}' missing min_baseline_value")
+        elif not isinstance(min_val, (int, float)):
+            errors.append(f"KPI '{kpi_name}' min_baseline_value must be numeric")
+
+        # Validate bad_direction
+        if config.get("bad_direction") not in ("low", "high"):
+            errors.append(f"KPI '{kpi_name}' bad_direction must be 'low' or 'high'")
+
+        # Validate related_rules
+        for idx, rule in enumerate(config.get("related_rules", [])):
+            for field in REQUIRED_RULE_FIELDS:
+                if field not in rule:
+                    errors.append(f"KPI '{kpi_name}' rule[{idx}] missing: {field}")
+
+            # Validate severity range
+            severity = rule.get("severity")
+            if severity is not None and not (1 <= severity <= 5):
+                errors.append(f"KPI '{kpi_name}' rule[{idx}] severity should be 1-5")
+
+    if errors:
+        error_msg = "KPI Configuration Errors:\n" + "\n".join(errors)
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    logger.info(f"KPI Configuration validated: {len(KPI_CONFIGS)} KPIs, all valid")
+    return True
+
+
+# ============================================================
 # KPI CONFIGURATION
 # ============================================================
 # Each KPI has:
@@ -115,6 +181,7 @@ KPI_CONFIGS = {
         "output_prefix": "dl_traffic",
         "min_baseline_value": 1.0,
         "related_rules": [
+            # === Original Throughput & Capacity Rules ===
             {"feature": "(HU) Cell DL Average Throughput (Mbps)", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "DL Throughput Degradation", "reason": "Cell DL throughput decreased.", "recommended_action": "Check DL scheduler, bandwidth, CA activation, load balancing, and congestion."},
             {"feature": "(HU) User DL Average Throughput (Mbps)", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "User Throughput Degradation", "reason": "User DL throughput decreased.", "recommended_action": "Check radio quality, PRB load, scheduler behavior, and user distribution."},
             {"feature": "(HU) DL PRB Utilization(%)", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "Capacity / Congestion", "reason": "DL PRB utilization increased.", "recommended_action": "Check load balancing, CA usage, bandwidth, traffic distribution, and capacity expansion."},
@@ -128,6 +195,23 @@ KPI_CONFIGS = {
             {"feature": "MAC CA Traffic Ratio", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Carrier Aggregation Issue", "reason": "CA traffic ratio decreased.", "recommended_action": "Check CA activation, SCell availability, CA bands, and CA parameters."},
             {"feature": "DL Traffic QCI-9", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Default Bearer Traffic Drop", "reason": "QCI-9 DL traffic decreased.", "recommended_action": "Check packet data service, APN/data service, user demand, and internet traffic trend."},
             {"feature": "DL_CCE_AllocFail (%)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Control Channel Congestion", "reason": "DL CCE allocation failure increased.", "recommended_action": "Check PDCCH/CCE utilization, control channel capacity, and scheduler configuration."},
+
+            # === NEW: TA Distribution (Coverage Analysis) ===
+            {"feature": "6.6-14 km", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Extended Coverage Issue", "reason": "High TA bin indicates users at cell edge or beyond planned coverage.", "recommended_action": "Check coverage extension, overshooting, pilot pollution, and cell size."},
+            {"feature": "3.5-6.6 km", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "Cell Edge Users Increase", "reason": "Users at cell edge increased.", "recommended_action": "Check coverage, cell dominance, and neighbor relationships."},
+            {"feature": "TA Weighted Avg (meter)", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "Average Distance Increase", "reason": "Average user distance from site increased.", "recommended_action": "Check coverage shift, antenna tilt, and traffic migration."},
+
+            # === NEW: CEU (Cell Edge User) Metrics ===
+            {"feature": "(HU)CEU Cell Downlink Average Throughput", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "Cell Edge Throughput", "reason": "Cell edge user throughput degraded.", "recommended_action": "Check CEU scheduling, cell edge SINR, and coverage."},
+            {"feature": "(HU)CEU User Downlink Average Througput", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "CEU User Experience", "reason": "Cell edge user experience degraded.", "recommended_action": "Check CEU parameters, ICIC, and edge coverage."},
+            {"feature": "L.Traffic.User.BorderUE.Avg", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "Border UE Increase", "reason": "Border/cell edge users increased.", "recommended_action": "Check coverage overlap, handover zones, and cell dominance."},
+
+            # === NEW: CA Enhanced ===
+            {"feature": "L.CA.UE.Avg", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "CA User Drop", "reason": "Average CA users decreased.", "recommended_action": "Check CA activation, SCell availability, and CA parameters."},
+            {"feature": "L.CA.DLSCell.Act.Att", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "SCell Activation Issue", "reason": "SCell activation attempts decreased.", "recommended_action": "Check SCell configuration, CA licensing, and secondary carriers."},
+            {"feature": "L.CA.DLSCell.Add.Att", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "SCell Addition Issue", "reason": "SCell addition attempts decreased.", "recommended_action": "Check CA configuration and inter-frequency measurements."},
+            {"feature": "3CC DL PDCP CA Traffic Volume GB", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "3CC CA Traffic Drop", "reason": "3-carrier aggregation traffic decreased.", "recommended_action": "Check 3CC CA bands, SCell availability, and CA configuration."},
+            {"feature": "DL PDCP FDDTDD CA Traffic Volume GB", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "FDD-TDD CA Traffic Drop", "reason": "FDD-TDD carrier aggregation traffic decreased.", "recommended_action": "Check FDD-TDD CA configuration and cross-mode scheduling."},
         ],
     },
 
@@ -139,6 +223,7 @@ KPI_CONFIGS = {
         "output_prefix": "ul_traffic",
         "min_baseline_value": 0.1,
         "related_rules": [
+            # === Original Rules ===
             {"feature": "(HU) Cell UL Average Throughput (Mbps)", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "UL Throughput Degradation", "reason": "Cell UL throughput decreased.", "recommended_action": "Check UL scheduler, UL PRB utilization, uplink interference, and power control."},
             {"feature": "(HU) User UL Average Throughput (Mbps)", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "UL User Throughput Degradation", "reason": "User UL throughput decreased.", "recommended_action": "Check UL radio quality, UL interference, PUSCH MCS, and UL PRB load."},
             {"feature": "(HU)UL PRB Utilization(%)", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "UL Capacity / Congestion", "reason": "UL PRB utilization increased.", "recommended_action": "Check UL capacity, UL scheduling, uplink load, and traffic distribution."},
@@ -148,6 +233,14 @@ KPI_CONFIGS = {
             {"feature": "UL RBLER", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "UL Radio Failure", "reason": "UL RBLER increased.", "recommended_action": "Check UL interference, coverage, UE power, and uplink radio conditions."},
             {"feature": "(HU) PUSCH MCS", "bad_direction": "low", "threshold": 15, "severity": 2, "category": "UL Modulation Efficiency Issue", "reason": "PUSCH MCS decreased.", "recommended_action": "Check UL SINR, interference, UE power control, and uplink coverage."},
             {"feature": "L.Traffic.ActiveUser.UL.Avg", "bad_direction": "low", "threshold": 20, "severity": 1, "category": "UL Traffic Demand Drop", "reason": "UL active users decreased.", "recommended_action": "Validate traffic trend before applying RF action."},
+
+            # === NEW: TA Distribution ===
+            {"feature": "6.6-14 km", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "UL Coverage Extension", "reason": "UL users at extended range.", "recommended_action": "Check UL coverage, UE power, and path balance."},
+            {"feature": "TA Weighted Avg (meter)", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "UL Distance Increase", "reason": "UL users average distance increased.", "recommended_action": "Check UL coverage and path balance."},
+
+            # === NEW: CEU Metrics ===
+            {"feature": "(HU)CEU Cell Uplink Average Throughput", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "UL Cell Edge Throughput", "reason": "Cell edge UL throughput degraded.", "recommended_action": "Check UL CEU scheduling and edge coverage."},
+            {"feature": "(HU)CEU User Uplink Average Throughput", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "UL CEU User Experience", "reason": "Cell edge UL user experience degraded.", "recommended_action": "Check UL power control and CEU parameters."},
         ],
     },
 
@@ -159,6 +252,7 @@ KPI_CONFIGS = {
         "output_prefix": "dl_throughput",
         "min_baseline_value": 5.0,
         "related_rules": [
+            # === Original Rules ===
             {"feature": "(HU) DL PRB Utilization(%)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "DL Congestion", "reason": "DL PRB utilization increased while DL throughput decreased.", "recommended_action": "Check congestion, load balancing, CA, bandwidth, scheduler, and capacity expansion."},
             {"feature": "DL Average CQI", "bad_direction": "low", "threshold": 15, "severity": 4, "category": "Poor Radio Quality", "reason": "CQI decreased while DL throughput degraded.", "recommended_action": "Check interference, PCI, antenna tilt, azimuth, and coverage."},
             {"feature": "(HU) DL IBLER(%)", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "High DL Retransmission", "reason": "DL IBLER increased while DL throughput degraded.", "recommended_action": "Check BLER, CQI, MCS, DL power, and interference."},
@@ -166,6 +260,19 @@ KPI_CONFIGS = {
             {"feature": "(HU) PDSCH MCS", "bad_direction": "low", "threshold": 15, "severity": 3, "category": "Low DL Modulation", "reason": "PDSCH MCS decreased while DL throughput degraded.", "recommended_action": "Check CQI, SINR, interference, and coverage."},
             {"feature": "MAC CA Traffic Ratio", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Low CA Usage", "reason": "CA traffic ratio decreased while DL throughput degraded.", "recommended_action": "Check CA activation, SCell availability, and CA configuration."},
             {"feature": "L.Traffic.ActiveUser.Dl.Avg", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "High User Load", "reason": "DL active users increased while DL throughput decreased.", "recommended_action": "Check load, scheduling, congestion, and user distribution."},
+
+            # === NEW: TA Distribution ===
+            {"feature": "6.6-14 km", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Cell Edge Impact on Throughput", "reason": "Distant users impacting throughput.", "recommended_action": "Check coverage, user distribution, and edge scheduling."},
+            {"feature": "0-156 m", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Near Users Drop", "reason": "Near-cell users decreased.", "recommended_action": "Check traffic distribution and near-cell coverage."},
+
+            # === NEW: CEU Metrics ===
+            {"feature": "(HU)CEU Cell Downlink Average Throughput", "bad_direction": "low", "threshold": 20, "severity": 4, "category": "CEU Throughput Impact", "reason": "Cell edge throughput impacting overall.", "recommended_action": "Check CEU scheduling and SINR."},
+            {"feature": "(HU)CEU User Downlink Average Througput", "bad_direction": "low", "threshold": 20, "severity": 4, "category": "CEU User Impact", "reason": "CEU user throughput degraded.", "recommended_action": "Check CEU parameters and coverage."},
+
+            # === NEW: MIMO/Rank ===
+            {"feature": "Reported rank 2 (%)", "bad_direction": "low", "threshold": 15, "severity": 2, "category": "MIMO Efficiency Drop", "reason": "Rank 2 (MIMO) usage decreased.", "recommended_action": "Check MIMO conditions, correlation, and rank adaptation."},
+            {"feature": "CQI_CW0", "bad_direction": "low", "threshold": 15, "severity": 3, "category": "CQI Codeword 0 Drop", "reason": "CQI on codeword 0 degraded.", "recommended_action": "Check channel conditions and reporting."},
+            {"feature": "CQI_CW1", "bad_direction": "low", "threshold": 15, "severity": 3, "category": "CQI Codeword 1 Drop", "reason": "CQI on codeword 1 (MIMO) degraded.", "recommended_action": "Check MIMO channel conditions."},
         ],
     },
 
@@ -177,12 +284,19 @@ KPI_CONFIGS = {
         "output_prefix": "ul_throughput",
         "min_baseline_value": 2.0,
         "related_rules": [
+            # === Original Rules ===
             {"feature": "(HU)UL PRB Utilization(%)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "UL Congestion", "reason": "UL PRB utilization increased while UL throughput degraded.", "recommended_action": "Check UL load, UL scheduler, and uplink capacity."},
             {"feature": "(HU) Avg UL Interference(dBm)", "bad_direction": "high", "threshold": 10, "severity": 4, "category": "UL Interference Issue", "reason": "UL interference increased while UL throughput degraded.", "recommended_action": "Check external interference, PIM, and uplink noise rise."},
             {"feature": "(HU) UL IBLER(%)", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "High UL Retransmission", "reason": "UL IBLER increased while UL throughput degraded.", "recommended_action": "Check UL BLER, interference, PUSCH MCS, and UE power."},
             {"feature": "UL RBLER", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "UL Radio Block Errors", "reason": "UL RBLER increased while UL throughput degraded.", "recommended_action": "Check UL coverage, interference, and UE power limitation."},
             {"feature": "(HU) PUSCH MCS", "bad_direction": "low", "threshold": 15, "severity": 3, "category": "Low UL Modulation", "reason": "PUSCH MCS decreased while UL throughput degraded.", "recommended_action": "Check uplink SINR, interference, and power control."},
             {"feature": "L.Traffic.ActiveUser.UL.Avg", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "High UL User Load", "reason": "UL active users increased while UL throughput decreased.", "recommended_action": "Check uplink scheduling, congestion, and load distribution."},
+
+            # === NEW: TA Distribution ===
+            {"feature": "6.6-14 km", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "UL Distance Impact", "reason": "Distant UL users impacting throughput.", "recommended_action": "Check UL path loss and power headroom."},
+
+            # === NEW: CEU Metrics ===
+            {"feature": "(HU)CEU Cell Uplink Average Throughput", "bad_direction": "low", "threshold": 20, "severity": 4, "category": "UL CEU Impact", "reason": "Cell edge UL throughput impacting overall.", "recommended_action": "Check UL CEU scheduling."},
         ],
     },
 
@@ -201,6 +315,9 @@ KPI_CONFIGS = {
             {"feature": "L.RRC.SetupFail.Rej.MMEOverload", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "MME Overload", "reason": "RRC rejection due to MME overload increased.", "recommended_action": "Check MME/S1 signaling, core side load, and S1 interface."},
             {"feature": "L.RRC.SetupFail.ResFail", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Radio Resource Failure", "reason": "RRC setup failures due to resource failure increased.", "recommended_action": "Check radio resources, PRB load, admission control, and congestion."},
             {"feature": "RACH Contention-Based Failures", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "RACH Failure", "reason": "RACH contention failures increased.", "recommended_action": "Check PRACH configuration, root sequence planning, preamble load, and coverage."},
+
+            # === NEW: RACH Enhanced ===
+            {"feature": "RACH Non-Contention-Based SR", "bad_direction": "low", "threshold": 5, "severity": 3, "category": "Non-Contention RACH Issue", "reason": "Non-contention RACH SR degraded.", "recommended_action": "Check HO-related RACH and dedicated preambles."},
         ],
     },
 
@@ -227,8 +344,9 @@ KPI_CONFIGS = {
         "default_threshold": 20.0,
         "category": "Retainability",
         "output_prefix": "drop_rate",
-        "min_baseline_value": 0.0,
+        "min_baseline_value": 0.1,  # Fixed: was 0.0, now 0.1 to avoid division issues
         "related_rules": [
+            # === Original Rules ===
             {"feature": "L.E-RAB.AbnormRel", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "Abnormal Release Increase", "reason": "E-RAB abnormal releases increased.", "recommended_action": "Check drop reason counters, radio quality, HO failures, and TNL/MME causes."},
             {"feature": "L.E-RAB.AbnormRel.Radio", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "Radio Drop Issue", "reason": "Radio abnormal releases increased.", "recommended_action": "Check coverage, interference, CQI, BLER, and antenna settings."},
             {"feature": "L.E-RAB.AbnormRel.Radio.ULSyncFail", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "UL Sync Failure", "reason": "Drops due to UL synchronization failure increased.", "recommended_action": "Check uplink coverage, UL interference, UE power, and timing advance."},
@@ -237,6 +355,17 @@ KPI_CONFIGS = {
             {"feature": "L.E-RAB.AbnormRel.MME", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "MME Drop Issue", "reason": "MME-related abnormal releases increased.", "recommended_action": "Check core network, MME, S1 signaling, and S1 reset counters."},
             {"feature": "L.E-RAB.AbnormRel.HOFailure", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "HO Related Drop", "reason": "Abnormal releases related to HO failure increased.", "recommended_action": "Check neighbors, missing neighbors, A3 offset, CIO, TTT, and PCI issues."},
             {"feature": "RRC Connection Drop Rate%", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "RRC Drop Issue", "reason": "RRC connection drop rate increased.", "recommended_action": "Check radio quality, coverage, interference, re-establishment, and mobility."},
+
+            # === NEW: RRC Re-establishment ===
+            {"feature": "(HU) RRC Reestablish Ratio(%)", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "High Re-establishment", "reason": "RRC re-establishment ratio increased.", "recommended_action": "Check radio link failures and re-establishment triggers."},
+            {"feature": "RRC Reestablish Failures(times)", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Re-establishment Failures", "reason": "RRC re-establishment failures increased.", "recommended_action": "Check coverage and RLF causes."},
+            {"feature": "L.RRC.ReEstFail.NoReply", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Re-establishment No Reply", "reason": "Re-establishment no reply failures.", "recommended_action": "Check coverage and signaling."},
+            {"feature": "L.RRC.ReEstFail.Rej", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Re-establishment Rejection", "reason": "Re-establishment rejections increased.", "recommended_action": "Check network admission and context."},
+
+            # === NEW: Additional Drop Reasons ===
+            {"feature": "L.E-RAB.AbnormRel.eNBTot.UEAbnormal", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "UE Abnormal Release", "reason": "UE abnormal releases increased.", "recommended_action": "Check UE behavior and radio conditions."},
+            {"feature": "L.E-RAB.AbnormRel.Radio.DRBReset", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "DRB Reset", "reason": "DRB reset drops increased.", "recommended_action": "Check DRB integrity and radio link."},
+            {"feature": "L.E-RAB.AbnormRel.Radio.SRBReset", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "SRB Reset", "reason": "SRB reset drops increased.", "recommended_action": "Check signaling radio bearer issues."},
         ],
     },
 
@@ -248,6 +377,7 @@ KPI_CONFIGS = {
         "output_prefix": "ho_success_rate",
         "min_baseline_value": 90.0,
         "related_rules": [
+            # === Original Rules ===
             {"feature": "Intra_Freq HO Prepare Failed Times", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Intra-Frequency HO Preparation Failure", "reason": "Intra-frequency HO preparation failures increased.", "recommended_action": "Check neighbor relations, target cell availability, admission control, and HO prep failure reasons."},
             {"feature": "Intra_Freq HO Execution Failed Times", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Intra-Frequency HO Execution Failure", "reason": "Intra-frequency HO execution failures increased.", "recommended_action": "Check radio quality, A3 offset, TTT, CIO, PCI, and target cell coverage."},
             {"feature": "Inter_Freq HO Prepare Failed Times", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Inter-Frequency HO Preparation Failure", "reason": "Inter-frequency HO preparation failures increased.", "recommended_action": "Check inter-frequency neighbors, measurement configuration, frequency priority, and target availability."},
@@ -256,6 +386,16 @@ KPI_CONFIGS = {
             {"feature": "X2 Intra-Freq Failure", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "X2 Intra-Frequency HO Failure", "reason": "X2 intra-frequency HO failures increased.", "recommended_action": "Check X2 links, neighbor relation, target cell, and mobility parameters."},
             {"feature": "X2 Inter-Freq Failure", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "X2 Inter-Frequency HO Failure", "reason": "X2 inter-frequency HO failures increased.", "recommended_action": "Check X2 links, inter-frequency neighbors, and target frequency settings."},
             {"feature": "L.HHO.PingPongHo", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "Ping-Pong HO Issue", "reason": "Ping-pong handovers increased.", "recommended_action": "Tune hysteresis, TTT, CIO, A3 offset, and neighbor priorities."},
+
+            # === NEW: HO Preparation Details ===
+            {"feature": "L.HHO.Prep.FailOut.NoReply", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "HO Prep No Reply", "reason": "HO preparation no reply failures.", "recommended_action": "Check X2/S1 connectivity and target cell."},
+            {"feature": "L.HHO.Prep.FailOut.PrepFailure", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "HO Prep Failure", "reason": "HO preparation failures.", "recommended_action": "Check neighbor relations and target admission."},
+            {"feature": "L.HHO.Prep.FailOut.TNL", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "HO Prep TNL Failure", "reason": "HO preparation TNL failures.", "recommended_action": "Check transport network for HO signaling."},
+            {"feature": "L.HHO.X2.Prep.FailOut.PrepFailure", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "X2 HO Prep Failure", "reason": "X2 HO preparation failures.", "recommended_action": "Check X2 interface and neighbor relations."},
+
+            # === NEW: FDD-TDD HO ===
+            {"feature": "Inter-Freq. FDD TDD HO_Failures (Prep)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "FDD-TDD HO Prep Failure", "reason": "FDD-TDD HO preparation failures.", "recommended_action": "Check FDD-TDD HO configuration."},
+            {"feature": "Inter-Freq. FDD TDD HO_Failures (EXec)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "FDD-TDD HO Exec Failure", "reason": "FDD-TDD HO execution failures.", "recommended_action": "Check FDD-TDD HO parameters and targets."},
         ],
     },
 
@@ -304,6 +444,11 @@ KPI_CONFIGS = {
             {"feature": "L.RRCRedirection.E2G.CSFB", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "E2G CSFB Redirection Drop", "reason": "LTE-to-2G CSFB redirection count decreased compared with baseline.", "recommended_action": "Check GERAN neighbor configuration, 2G target coverage, GERAN frequency priority, LAI/TAI mapping, and CSFB redirection settings."},
             {"feature": "(TE) RRC Setup SR%", "bad_direction": "low", "threshold": 5, "severity": 4, "category": "LTE RRC Access Issue", "reason": "RRC setup success rate decreased, which can affect CSFB before fallback starts.", "recommended_action": "Check LTE RRC accessibility, RACH, RRC setup failures, admission control, and radio quality."},
             {"feature": "ERAB Setup Success Rate", "bad_direction": "low", "threshold": 5, "severity": 3, "category": "E-RAB Setup Issue", "reason": "E-RAB setup success rate decreased, indicating possible access or core signaling issue affecting services.", "recommended_action": "Check E-RAB setup failures, MME/TNL/RNL causes, admission control, radio resources, and S1 signaling."},
+
+            # === NEW: CSFB Enhanced ===
+            {"feature": "L.FlashCSFB.E2W", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Flash CSFB to WCDMA", "reason": "Flash CSFB to WCDMA decreased.", "recommended_action": "Check flash CSFB configuration."},
+            {"feature": "Flash CSFB Ratio", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Flash CSFB Ratio", "reason": "Flash CSFB ratio decreased.", "recommended_action": "Check flash CSFB optimization."},
+            {"feature": "L.RRCRedirection.E2W.Blind", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Blind Redirection to WCDMA", "reason": "Blind redirection to WCDMA decreased.", "recommended_action": "Check blind redirection settings."},
         ],
     },
 
@@ -322,6 +467,137 @@ KPI_CONFIGS = {
             {"feature": "E-RAB Drop Rate QCI 7", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "QCI-7 Drop Issue", "reason": "QCI-7 drop rate increased.", "recommended_action": "Check VoLTE-related bearer retainability and radio quality."},
             {"feature": "BA_Overall SRVCC HO Execution Success Rate (%)", "bad_direction": "low", "threshold": 5, "severity": 4, "category": "SRVCC Execution Degradation", "reason": "SRVCC HO execution success rate decreased.", "recommended_action": "Check SRVCC neighbors, 2G/3G target cells, IMS/SRVCC configuration, and mobility parameters."},
             {"feature": "BA_Overall SRVCC HO Preparation Success Rate (%)", "bad_direction": "low", "threshold": 5, "severity": 3, "category": "SRVCC Preparation Degradation", "reason": "SRVCC HO preparation success rate decreased.", "recommended_action": "Check SRVCC preparation, target availability, MSC/MME coordination, and neighbor definitions."},
+
+            # === NEW: VoLTE Enhanced ===
+            {"feature": "L.E-RAB.FailEst.MME.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP ERAB MME Failure", "reason": "VoIP ERAB MME failures.", "recommended_action": "Check MME for VoIP bearers."},
+            {"feature": "L.E-RAB.FailEst.RNL.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP ERAB RNL Failure", "reason": "VoIP ERAB RNL failures.", "recommended_action": "Check radio network for VoIP."},
+            {"feature": "L.E-RAB.FailEst.TNL.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP ERAB TNL Failure", "reason": "VoIP ERAB TNL failures.", "recommended_action": "Check transport for VoIP."},
+            {"feature": "L.E-RAB.FailEst.PoorCover.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP Poor Coverage", "reason": "VoIP poor coverage failures.", "recommended_action": "Check VoLTE coverage."},
+            {"feature": "L.E-RAB.FailEst.NoRadioRes.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP No Radio Resource", "reason": "VoIP no radio resource failures.", "recommended_action": "Check resources for VoIP bearers."},
+            {"feature": "DL user Thrpt Mbps QCI 7", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "QCI-7 Throughput", "reason": "QCI-7 (VoLTE) throughput degraded.", "recommended_action": "Check QCI-7 bearer quality."},
+            {"feature": "L.Traffic.ActiveUser.DL.QCI.7", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "QCI-7 Active Users", "reason": "QCI-7 active users decreased.", "recommended_action": "Check VoLTE user demand."},
+        ],
+    },
+
+    # === NEW KPI: RRC Re-establishment ===
+    "RRC Re-establishment": {
+        "target_kpi": "RRC Reestablish Setup Success Rate(%)",
+        "bad_direction": "low",
+        "default_threshold": 10.0,
+        "category": "Mobility",
+        "output_prefix": "rrc_reestablishment",
+        "min_baseline_value": 80.0,
+        "related_rules": [
+            {"feature": "RRC Reestablish Failures(times)", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Re-establishment Failure", "reason": "RRC re-establishment failures increased.", "recommended_action": "Check RLF causes, coverage, and re-establishment parameters."},
+            {"feature": "L.RRC.ReEstFail.NoReply", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Re-establishment No Reply", "reason": "No reply during re-establishment.", "recommended_action": "Check target cell coverage and signaling."},
+            {"feature": "L.RRC.ReEstFail.Rej", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Re-establishment Rejection", "reason": "Re-establishment rejected.", "recommended_action": "Check context availability and network admission."},
+            {"feature": "L.RRC.ReEstFail.NoCntx", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "No Context", "reason": "No context for re-establishment.", "recommended_action": "Check context retention and source cell."},
+            {"feature": "L.RRC.ReEstFail.ResFail", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Resource Failure", "reason": "Resource failure during re-establishment.", "recommended_action": "Check target cell resources."},
+            {"feature": "RRC Connection Drop Rate%", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "RRC Drop Issue", "reason": "RRC drops triggering re-establishment.", "recommended_action": "Check RRC drop causes."},
+            {"feature": "L.E-RAB.AbnormRel.Radio", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Radio Link Failure", "reason": "Radio failures causing RLF.", "recommended_action": "Check radio quality and coverage."},
+            {"feature": "(HU) RRC Reestablish Ratio(%)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "High Re-establishment Ratio", "reason": "RRC re-establishment ratio increased.", "recommended_action": "Check RLF triggers and mobility."},
         ],
     },
 }
+
+
+# ============================================================
+# RUN VALIDATION ON MODULE LOAD
+# ============================================================
+# Uncomment the following line to enable validation at startup:
+validate_kpi_configs()
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def get_kpi_config(kpi_name: str) -> dict:
+    """Get KPI configuration by name.
+
+    Args:
+        kpi_name: Name of the KPI (e.g., "DL Traffic")
+
+    Returns:
+        dict: KPI configuration
+
+    Raises:
+        KeyError: If KPI name not found
+    """
+    if kpi_name not in KPI_CONFIGS:
+        available = list(KPI_CONFIGS.keys())
+        raise KeyError(f"KPI '{kpi_name}' not found. Available KPIs: {available}")
+    return KPI_CONFIGS[kpi_name]
+
+
+def get_all_target_kpis() -> list:
+    """Get list of all target KPI column names.
+
+    Returns:
+        list: List of target KPI column names
+    """
+    return [config["target_kpi"] for config in KPI_CONFIGS.values()]
+
+
+def get_kpi_categories() -> dict:
+    """Get KPI names grouped by category.
+
+    Returns:
+        dict: Category -> list of KPI names
+    """
+    categories = {}
+    for kpi_name, config in KPI_CONFIGS.items():
+        cat = config.get("category", "Unknown")
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(kpi_name)
+    return categories
+
+
+def get_related_features_for_kpi(kpi_name: str) -> list:
+    """Get list of related feature names for a KPI.
+
+    Args:
+        kpi_name: Name of the KPI
+
+    Returns:
+        list: List of feature column names
+    """
+    config = get_kpi_config(kpi_name)
+    return [rule["feature"] for rule in config.get("related_rules", [])]
+
+
+def count_rules_per_kpi() -> dict:
+    """Count number of related rules for each KPI.
+
+    Returns:
+        dict: KPI name -> rule count
+    """
+    return {
+        kpi_name: len(config.get("related_rules", []))
+        for kpi_name, config in KPI_CONFIGS.items()
+    }
+
+
+# ============================================================
+# STATISTICS
+# ============================================================
+if __name__ == "__main__":
+    print("=" * 60)
+    print("KPI CONFIGURATION STATISTICS")
+    print("=" * 60)
+    print(f"Total KPIs: {len(KPI_CONFIGS)}")
+    print()
+
+    print("KPIs by Category:")
+    for cat, kpis in get_kpi_categories().items():
+        print(f"  {cat}: {len(kpis)} KPI(s)")
+    print()
+
+    print("Rules per KPI:")
+    for kpi_name, count in count_rules_per_kpi().items():
+        print(f"  {kpi_name}: {count} rules")
+    print()
+
+    total_rules = sum(count_rules_per_kpi().values())
+    print(f"Total Related Rules: {total_rules}")
