@@ -133,13 +133,20 @@ def compute_day_by_day_degradation(
                     continue
                 baseline_day = pd.Timestamp(baseline_day).normalize()
                 
-                if baseline_day in baseline_daily.index and not pd.isna(baseline_daily.get(baseline_day)):
+                # NEW: Keep the cell even if baseline is zero/NaN — record the
+                # baseline value so apply_baseline_fallback() can recover it
+                # later from historical data. calculate_degradation() will
+                # return NaN for zero/NaN baselines, which is fine: the
+                # fallback at the aggregate level will patch baseline_avg_kpi
+                # and we recompute the ratio afterwards.
+                if baseline_day in baseline_daily.index:
                     baseline_val = baseline_daily[baseline_day]
-                    baseline_values.append(baseline_val)
-                    
-                    deg = calculate_degradation(recent_val, baseline_val, bad_direction)
-                    if not pd.isna(deg):
-                        day_degradations.append(deg)
+                    if not pd.isna(baseline_val):
+                        baseline_values.append(baseline_val)
+                        deg = calculate_degradation(recent_val, baseline_val, bad_direction)
+                        if not pd.isna(deg):
+                            day_degradations.append(deg)
+                # If baseline_day is missing or NaN, skip but keep the cell
             else:
                 # 4week_rolling_avg: compare with same weekday average from baseline period
                 # Get all same-weekday values from baseline
@@ -160,13 +167,23 @@ def compute_day_by_day_degradation(
                     if not pd.isna(deg):
                         day_degradations.append(deg)
         
-        if not day_degradations:
+        # NEW: Do NOT skip cells with empty day_degradations.
+        # Cells with all-zero baseline (or all-missing baseline) will have
+        # empty day_degradations but may still have valid recent_values.
+        # We include them here with NaN kpi_degradation_ratio_% so that
+        # apply_baseline_fallback() in the caller can recover their baseline
+        # from historical data and recompute the ratio. Only cells with NO
+        # recent values at all are skipped (nothing to compare).
+        if not recent_values:
             continue
         
         result_row = dict(zip(cell_cols, [cell_row[c] for c in cell_cols]))
         result_row['recent_avg_kpi'] = np.mean(recent_values) if recent_values else np.nan
         result_row['baseline_avg_kpi'] = np.mean(baseline_values) if baseline_values else np.nan
-        result_row['kpi_degradation_ratio_%'] = np.mean(day_degradations)
+        # If no day_degradations were computed (e.g., all baselines were zero),
+        # kpi_degradation_ratio_% stays NaN. The fallback + recompute step
+        # in the caller will fill this in if a historical baseline is found.
+        result_row['kpi_degradation_ratio_%'] = np.mean(day_degradations) if day_degradations else np.nan
         result_row['day_by_day_degradations'] = day_degradations
         result_row['days_compared'] = len(day_degradations)
         result_row['recent_days_count'] = len(recent_values)
@@ -298,15 +315,11 @@ def analyze_selected_kpi(
         inc_mask = (comparison["recent_days_count"] < expected_recent) | (comparison["baseline_days_count"] < expected_baseline)
         _record(comparison[inc_mask], "incomplete day count (recent or baseline)")
 
-    # ---- Handle edge case: both baseline AND recent are zero/NaN ----
-    if not comparison.empty:
-        both_zero = (comparison["baseline_avg_kpi"].fillna(0) == 0) & (comparison["recent_avg_kpi"].fillna(0) == 0)
-        if both_zero.any():
-            _record(comparison[both_zero], "both baseline and recent are zero/NaN (no data to compare)")
-            comparison = comparison[~both_zero].copy()
-            log_msg(f"INFO: {both_zero.sum()} cells excluded - both baseline and recent are zero/NaN")
-
-    # ---- Apply baseline fallback for cells with zero/NaN baseline ----
+    # ---- NEW: Apply baseline fallback FIRST (before any exclusion) ----
+    # For cells with zero/NaN baseline_avg_kpi, try to recover a defensible
+    # baseline from historical same-weekday data (Stage 1), and fall back to
+    # min_baseline_value as last resort (Stage 2). This runs BEFORE the
+    # "both zero" exclusion so recoverable cells are not silently dropped.
     if not comparison.empty:
         comparison = apply_baseline_fallback(
             comparison_df=comparison,
@@ -322,7 +335,50 @@ def analyze_selected_kpi(
             log_callback=log_msg,
         )
 
-    # No min_baseline_value exclusion anymore
+    # ---- NEW: Recompute kpi_degradation_ratio_% for cells that used fallback ----
+    # When the day-by-day comparison couldn't compute a degradation ratio
+    # (because the baseline was zero/NaN), but the fallback recovered a
+    # baseline, we recompute the ratio here using the patched baseline_avg_kpi
+    # and the observed recent_avg_kpi. This gives those cells a fair chance
+    # to be evaluated against the threshold.
+    if not comparison.empty:
+        fallback_mask = comparison.get("baseline_fallback_used", False) == True
+        needs_recompute = fallback_mask & comparison["kpi_degradation_ratio_%"].isna()
+        if needs_recompute.any():
+            n_recompute = int(needs_recompute.sum())
+            log_msg(f"Recomputing degradation ratio for {n_recompute} cells with fallback baseline")
+            for idx in comparison[needs_recompute].index:
+                recent_val = comparison.at[idx, "recent_avg_kpi"]
+                baseline_val = comparison.at[idx, "baseline_avg_kpi"]
+                deg = calculate_degradation(recent_val, baseline_val, bad_direction)
+                comparison.at[idx, "kpi_degradation_ratio_%"] = deg
+                # Update days_compared to reflect that we used aggregate comparison
+                if pd.isna(comparison.at[idx, "days_compared"]) or comparison.at[idx, "days_compared"] == 0:
+                    comparison.at[idx, "days_compared"] = comparison.at[idx, "recent_days_count"]
+
+    # ---- Post-fallback exclusion: only drop cells that are truly unrecoverable ----
+    # After the fallback, baseline_avg_kpi should be > 0 for all cells
+    # (either from observation, historical median, or min_baseline_value).
+    # The only cells we still cannot analyze are those where recent is also
+    # zero/NaN — no recent traffic means no degradation ratio to compute.
+    if not comparison.empty:
+        recent_is_zero = comparison["recent_avg_kpi"].fillna(0) == 0
+        baseline_still_zero = comparison["baseline_avg_kpi"].fillna(0) == 0
+        unrecoverable = recent_is_zero | baseline_still_zero
+        if unrecoverable.any():
+            _record(
+                comparison[unrecoverable],
+                "unrecoverable after fallback (recent is zero/NaN or baseline still zero)"
+            )
+            comparison = comparison[~unrecoverable].copy()
+            log_msg(
+                f"INFO: {int(unrecoverable.sum())} cells excluded - "
+                f"unrecoverable after baseline fallback "
+                f"(recent_zero={int(recent_is_zero.sum())}, "
+                f"baseline_still_zero={int(baseline_still_zero.sum())})"
+            )
+
+    # No min_baseline_value exclusion anymore (fallback handles it)
     excluded_by_min = 0
 
     # Require complete days if specified
