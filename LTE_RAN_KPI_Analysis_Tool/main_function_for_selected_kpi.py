@@ -20,6 +20,9 @@ from KPI_Configuration import (
     CELL_COL,
     CELL_ID_COLS,
     KPI_CONFIGS,
+    BASELINE_MODE_LAST_WEEK,
+    BASELINE_MODE_4WEEK_AVG,
+    BASELINE_MODE_CUSTOM,
 )
 from clean_excel_and_helpers import (
     clean_excel_columns,
@@ -162,17 +165,235 @@ def analyze_selected_kpi(
     else:
         excluded_by_min = 0
 
-    # require complete days -> exclude incomplete from the degraded set (kept in incomplete_df)
+    # require_complete_days now applies strictly to BASELINE only.
+    # Recent windows are allowed to be partial — the paired comparison
+    # below transparently handles missing recent days without bias.
     if require_complete_days:
         comparison = comparison[
-            (comparison["recent_days_count"] == expected_recent) &
-            (comparison["baseline_days_count"] == expected_baseline)].copy()
+            comparison["baseline_days_count"] == expected_baseline].copy()
+
+    # ================================================================
+    # ADVANCED: Day-aligned paired comparison with confidence scoring
+    # ================================================================
+    #
+    # Why this replaces the naive degradation calculation:
+    #
+    # The old approach computed degradation as:
+    #   (mean(baseline) - mean(recent)) / mean(baseline)
+    #
+    # When recent has missing days, those mean values come from different
+    # day samples, which introduces bias from day-of-week seasonality
+    # (LTE traffic varies a lot between weekdays/weekends).
+    #
+    # The new approach pairs each recent day with its baseline twin:
+    #   - last_week mode : recent Monday <-> baseline Monday (date - 7d)
+    #   - 4-week mode    : recent Monday <-> median of all baseline Mondays
+    #   - custom mode    : treated like last_week (7-day offset)
+    #
+    # Missing recent days simply produce no pair — they don't distort
+    # the result. Two transparency columns are added so the RF engineer
+    # can judge data quality:
+    #   paired_days_count   : how many real day-pairs backed the result
+    #   confidence_score_%  : paired_days_count / expected_recent * 100
+    #   daily_ratios        : per-pair list, for audit / debugging
+    #
+    # Note: paired comparison uses OBSERVED data only. The imputed
+    # baseline_avg_kpi summary column is kept for the report, but the
+    # degradation% uses real pair-wise comparisons.
+    # ================================================================
+
+    # ── Quality floors ───────────────────────────────────────────────
+    # MIN_PAIRED_DAYS: absolute minimum number of real day-pairs needed.
+    # Scaled to expected_recent so small recent windows aren't impossible:
+    #   expected_recent <= 2 → floor of 1 (single pair acceptable)
+    #   expected_recent  > 2 → floor of 2 (avoid trusting a single day)
+    # MIN_RECENT_COVERAGE: also need at least this fraction of recent days
+    # to be paired. Combined with the floor via max().
+    # FIX (Flaw 5): for very small num_days (1-2), the old fixed floor of 2
+    # made the tool exclude every cell. Now it scales sensibly.
+    MIN_PAIRED_DAYS = 1 if expected_recent <= 2 else 2
+    MIN_RECENT_COVERAGE = 0.5
+    # FIX (Flaw 2): the reported degradation% is still the mean of per-day
+    # ratios (magnitude-aware, good for ranking), but a single transient spike
+    # must not flip a cell to "Degraded" on its own. A cell is only flagged
+    # when at least this fraction of its paired days are individually at/above
+    # the threshold — i.e. the degradation is day-level *consistent*, not a
+    # one-off. Exposed via the new degraded_days_count / degraded_days_ratio_%
+    # audit columns so the decision is transparent.
+    MIN_DEGRADED_DAY_FRACTION = 0.5
+
+    # Pre-build per-cell-per-date lookups (one row per cell+date).
+    # This makes per-cell lookup O(1) instead of repeated filtering.
+    recent_per_day = (recent_df.groupby(CELL_ID_COLS + [DATE_COL])[target_kpi]
+                      .mean())
+    baseline_per_day = (baseline_obs_df.groupby(CELL_ID_COLS + [DATE_COL])[target_kpi]
+                        .mean())
+
+    # In 4-week mode AND custom mode (when the offset doesn't land in the
+    # custom window), we need a weekday-keyed baseline. Pre-compute median
+    # of matching weekdays for each cell.
+    # FIX (Flaw 4): custom mode now also uses this fallback when the strict
+    # 7-day offset doesn't find a twin in the custom baseline window.
+    needs_weekday_fallback = baseline_mode in (
+        BASELINE_MODE_4WEEK_AVG, BASELINE_MODE_CUSTOM)
+    baseline_weekday_median = {}
+    if needs_weekday_fallback:
+        # Build {cell_tuple: {weekday: median_value}}
+        tmp = baseline_obs_df.copy()
+        tmp["_wd"] = tmp[DATE_COL].dt.weekday
+        wd_grouped = (tmp.groupby(CELL_ID_COLS + ["_wd"])[target_kpi]
+                      .median())
+        for idx, val in wd_grouped.items():
+            cell_key = idx[:-1]   # cell id tuple
+            wd = idx[-1]
+            baseline_weekday_median.setdefault(cell_key, {})[wd] = val
+
+    paired_degradations = []
+    paired_counts = []
+    daily_ratios_strs = []
+    min_pair_ratios = []        # FIX (Flaw 8): numeric audit column
+    max_pair_ratios = []        # FIX (Flaw 8): numeric audit column
+    degraded_day_counts = []    # FIX (Flaw 2): per-cell count of days >= threshold
+    rows_to_drop = []           # indices of cells that fail the paired-days check
+
+    for idx, row in comparison.iterrows():
+        # Build the cell identity tuple to look up by
+        cell_key = tuple(row[c] for c in CELL_ID_COLS)
+
+        # Fetch this cell's per-day recent and baseline values.
+        # .loc on a MultiIndex Series with a partial key returns a sub-series.
+        try:
+            cell_recent_series = recent_per_day.loc[cell_key]
+            cell_recent_dict = cell_recent_series.to_dict() \
+                if hasattr(cell_recent_series, "to_dict") \
+                else {cell_recent_series.name: cell_recent_series}
+        except KeyError:
+            cell_recent_dict = {}
+
+        try:
+            cell_baseline_series = baseline_per_day.loc[cell_key]
+            cell_baseline_dict = cell_baseline_series.to_dict() \
+                if hasattr(cell_baseline_series, "to_dict") \
+                else {cell_baseline_series.name: cell_baseline_series}
+        except KeyError:
+            cell_baseline_dict = {}
+
+        # Run paired comparison for this cell
+        ratios = []
+        for r_date, r_val in cell_recent_dict.items():
+            if pd.isna(r_val):
+                continue
+
+            # ── Find the baseline twin for this recent date ──
+            if baseline_mode == BASELINE_MODE_4WEEK_AVG:
+                # Compare against median of matching weekdays in baseline
+                wd_map = baseline_weekday_median.get(cell_key, {})
+                b_val = wd_map.get(r_date.weekday())
+
+            elif baseline_mode == BASELINE_MODE_CUSTOM:
+                # FIX (Flaw 4): try strict 7-day offset first, then fall
+                # back to closest matching weekday if that lands outside
+                # the custom baseline window.
+                b_date = r_date - pd.Timedelta(days=7)
+                b_val = cell_baseline_dict.get(b_date)
+                if b_val is None or pd.isna(b_val):
+                    # Fall back to median of matching weekdays
+                    wd_map = baseline_weekday_median.get(cell_key, {})
+                    b_val = wd_map.get(r_date.weekday())
+
+            else:
+                # last_week mode (and any unknown mode): exact 7-day offset
+                b_date = r_date - pd.Timedelta(days=7)
+                b_val = cell_baseline_dict.get(b_date)
+
+            # FIX (Flaw 1): a per-pair baseline below the KPI's
+            # min_baseline_value yields a tiny denominator and a wildly
+            # unstable ratio that can dominate the unweighted mean and hide a
+            # real degradation. Skip such pairs — consistent with the
+            # average-level min_baseline_value filter applied earlier. A dropped
+            # pair lowers confidence_score_% and is omitted from daily_ratios,
+            # so the exclusion stays visible to the engineer.
+            if (b_val is None or pd.isna(b_val) or b_val == 0
+                    or (min_baseline_value > 0 and b_val < min_baseline_value)):
+                continue
+
+            ratio = calculate_degradation(r_val, b_val, bad_direction)
+            if not pd.isna(ratio):
+                ratios.append(ratio)
+
+        paired_count = len(ratios)
+        mean_ratio = float(np.mean(ratios)) if ratios else np.nan
+        # FIX (Flaw 8): expose min/max as numeric columns for downstream
+        # analysis (Excel formulas, etc.). NaN when no pairs exist.
+        min_ratio = float(np.min(ratios)) if ratios else np.nan
+        max_ratio = float(np.max(ratios)) if ratios else np.nan
+        # FIX (Flaw 2): how many of this cell's paired days are individually
+        # at/above the degradation threshold. Used for the consistency gate so
+        # a lone spike can't flip status by itself.
+        degraded_today = int(sum(1 for r in ratios if r >= degradation_threshold))
+
+        # Check quality floors. A cell must have at least min_pairs_needed
+        # real day-pairs to be trusted.
+        min_pairs_needed = max(
+            MIN_PAIRED_DAYS,
+            int(np.ceil(expected_recent * MIN_RECENT_COVERAGE)))
+
+        if paired_count < min_pairs_needed or pd.isna(mean_ratio):
+            # Mark for removal and record in incomplete_df
+            rows_to_drop.append(idx)
+            inc_rec = pd.DataFrame({
+                **{c: [row[c]] for c in CELL_ID_COLS},
+                "kpi": [selected_kpi_name],
+                "recent_days_count": [row.get("recent_days_count")],
+                "baseline_days_count": [row.get("baseline_days_count")],
+                "expected_recent_days": [expected_recent],
+                "expected_baseline_days": [expected_baseline],
+                "reason": [f"too few paired days ({paired_count} < {min_pairs_needed})"],
+            })
+            incomplete_records.append(inc_rec)
+            paired_degradations.append(np.nan)
+            paired_counts.append(paired_count)
+            daily_ratios_strs.append(str([round(r, 2) for r in ratios]))
+            min_pair_ratios.append(min_ratio)
+            max_pair_ratios.append(max_ratio)
+            degraded_day_counts.append(degraded_today)
+        else:
+            paired_degradations.append(mean_ratio)
+            paired_counts.append(paired_count)
+            daily_ratios_strs.append(str([round(r, 2) for r in ratios]))
+            min_pair_ratios.append(min_ratio)
+            max_pair_ratios.append(max_ratio)
+            degraded_day_counts.append(degraded_today)
+
+    # Attach paired results as new columns
+    comparison["paired_days_count"] = paired_counts
+    comparison["daily_ratios"] = daily_ratios_strs
+    # FIX (Flaw 8): numeric audit columns. Round to 2dp for readability.
+    comparison["min_pair_ratio_%"] = pd.Series(min_pair_ratios,
+                                                index=comparison.index).round(2)
+    comparison["max_pair_ratio_%"] = pd.Series(max_pair_ratios,
+                                                index=comparison.index).round(2)
+    comparison["confidence_score_%"] = (
+        comparison["paired_days_count"] / expected_recent * 100).round(1)
+    # FIX (Flaw 2): day-level consistency audit columns.
+    comparison["degraded_days_count"] = degraded_day_counts
+    comparison["degraded_days_ratio_%"] = (
+        comparison["degraded_days_count"] /
+        comparison["paired_days_count"].replace(0, np.nan) * 100).round(1)
+    comparison["_paired_degradation"] = paired_degradations
+
+    # Drop the cells that failed the paired-days check
+    if rows_to_drop:
+        log_msg(f"INFO: {len(rows_to_drop)} cells excluded from paired "
+                f"comparison (too few day-pairs). See incomplete_df.")
+        comparison = comparison.drop(index=rows_to_drop).copy()
 
     incomplete_df = pd.concat(incomplete_records, ignore_index=True) if incomplete_records else _empty_incomplete()
 
-    # Degradation
-    comparison["kpi_degradation_ratio_%"] = comparison.apply(
-        lambda r: calculate_degradation(r["recent_avg_kpi"], r["baseline_avg_kpi"], bad_direction), axis=1)
+    # Degradation: use the paired result computed above. This is the
+    # accurate day-aligned ratio, not the naive (mean - mean) / mean.
+    comparison["kpi_degradation_ratio_%"] = comparison["_paired_degradation"]
+    comparison = comparison.drop(columns=["_paired_degradation"])
 
     # Significance test on OBSERVED values only (never on imputed data)
     if enable_significance_test and not comparison.empty:
@@ -188,13 +409,22 @@ def analyze_selected_kpi(
         comparison["p_value"] = sig_df["p_value"].reindex(comparison.index)
         comparison["t_statistic"] = sig_df["t_statistic"].reindex(comparison.index)
 
+    # FIX (Flaw 2): consistency gate — require a real fraction of paired days
+    # to be individually degraded, so a single transient spike cannot flip a
+    # cell to "Degraded" on the strength of the mean alone.
+    consistent_mask = (
+        comparison["degraded_days_ratio_%"].fillna(0)
+        >= MIN_DEGRADED_DAY_FRACTION * 100)
+
     if enable_significance_test:
         comparison["kpi_status"] = np.where(
             (comparison["kpi_degradation_ratio_%"] >= degradation_threshold) &
-            (comparison.get("stat_significant", False) == True), "Degraded", "Normal")
+            (comparison.get("stat_significant", False) == True) &
+            consistent_mask, "Degraded", "Normal")
     else:
         comparison["kpi_status"] = np.where(
-            comparison["kpi_degradation_ratio_%"] >= degradation_threshold, "Degraded", "Normal")
+            (comparison["kpi_degradation_ratio_%"] >= degradation_threshold) &
+            consistent_mask, "Degraded", "Normal")
 
     comparison["selected_kpi_name"] = selected_kpi_name
     comparison["target_kpi_column"] = target_kpi
@@ -319,6 +549,11 @@ def analyze_selected_kpi(
         "recent_avg_kpi", "baseline_avg_kpi", "recent_max_kpi", "baseline_max_kpi",
         "recent_total_kpi", "baseline_total_kpi", "recent_days_count", "baseline_days_count",
         "baseline_imputed_days",
+        # --- NEW: paired comparison transparency columns ---
+        "paired_days_count", "confidence_score_%",
+        "min_pair_ratio_%", "max_pair_ratio_%", "daily_ratios",
+        "degraded_days_count", "degraded_days_ratio_%",
+        # ----------------------------------------------------
         "kpi_degradation_ratio_%", "kpi_status", "stat_significant", "p_value",
         "main_cause_counter_or_kpi", "main_cause_recent_value", "main_cause_baseline_value",
         "main_cause_change_%", "main_root_cause_category", "main_degradation_reason",
