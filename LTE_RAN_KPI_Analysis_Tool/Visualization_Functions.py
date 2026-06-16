@@ -2,6 +2,7 @@
 # LTE KPI Degradation Analyzer - Visualization Functions
 # ============================================================
 # This file contains functions for dashboard and chart visualization.
+# Includes KPI lists for slicers and trend visualization helpers.
 # ============================================================
 
 import tkinter as tk
@@ -18,10 +19,297 @@ from KPI_Configuration import (
     DATE_COL,
     SITE_COL,
     CELL_COL,
+    LOCAL_CELL_COL,
+    CELL_ID_COLS,
     KPI_CONFIGS,
 )
 from clean_excel_and_helpers import find_matching_column
 
+
+# ============================================================
+# KPI LISTS FOR DASHBOARD SLICER (13 Analyzed KPIs)
+# ============================================================
+
+# Short names for dashboard display (user-friendly)
+KPI_SHORT_NAMES = [
+    "DL Traffic",
+    "UL Traffic",
+    "DL Throughput",
+    "UL Throughput",
+    "RRC Setup SR",
+    "ERAB Setup SR",
+    "Drop Rate",
+    "HO Success Rate",
+    "Availability",
+    "RACH Success Rate",
+    "CSFB KPI",
+    "VoLTE KPIs",
+    "RRC Re-establishment",
+]
+
+# Full list with details
+KPI_LIST = [
+    {
+        "short_name": "DL Traffic",
+        "target_column": "(HU) DL Traffic Volume (GBytes)",
+        "category": "Traffic",
+        "threshold_%": 30.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "UL Traffic",
+        "target_column": "(HU) UL Traffic Volume (GBytes)",
+        "category": "Traffic",
+        "threshold_%": 30.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "DL Throughput",
+        "target_column": "(HU) User DL Average Throughput (Mbps)",
+        "category": "Integrity",
+        "threshold_%": 20.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "UL Throughput",
+        "target_column": "(HU) User UL Average Throughput (Mbps)",
+        "category": "Integrity",
+        "threshold_%": 20.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "RRC Setup SR",
+        "target_column": "(TE) RRC Setup SR%",
+        "category": "Accessibility",
+        "threshold_%": 5.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "ERAB Setup SR",
+        "target_column": "ERAB Setup Success Rate",
+        "category": "Accessibility",
+        "threshold_%": 5.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "Drop Rate",
+        "target_column": "E-RAB Drop Rate (E-NodeB + MME) %",
+        "category": "Retainability",
+        "threshold_%": 20.0,
+        "bad_direction": "high",
+    },
+    {
+        "short_name": "HO Success Rate",
+        "target_column": "HO SR% Overall",
+        "category": "Mobility",
+        "threshold_%": 5.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "Availability",
+        "target_column": "Availability",
+        "category": "Availability",
+        "threshold_%": 1.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "RACH Success Rate",
+        "target_column": "(HU) RACH Success Rate(%)",
+        "category": "Accessibility",
+        "threshold_%": 5.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "CSFB KPI",
+        "target_column": "CSFB SR%",
+        "category": "CSFB / Voice Accessibility",
+        "threshold_%": 5.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "VoLTE KPIs",
+        "target_column": "BA_Voice E2E VQI",
+        "category": "VoLTE",
+        "threshold_%": 5.0,
+        "bad_direction": "low",
+    },
+    {
+        "short_name": "RRC Re-establishment",
+        "target_column": "RRC Reestablish Setup Success Rate(%)",
+        "category": "Mobility",
+        "threshold_%": 10.0,
+        "bad_direction": "low",
+    },
+]
+
+# Categories for grouping in dashboard
+KPI_CATEGORIES = {
+    "Traffic": ["DL Traffic", "UL Traffic"],
+    "Integrity": ["DL Throughput", "UL Throughput"],
+    "Accessibility": ["RRC Setup SR", "ERAB Setup SR", "RACH Success Rate"],
+    "Retainability": ["Drop Rate"],
+    "Mobility": ["HO Success Rate", "RRC Re-establishment"],
+    "Availability": ["Availability"],
+    "CSFB / Voice Accessibility": ["CSFB KPI"],
+    "VoLTE": ["VoLTE KPIs"],
+}
+
+# Target columns to filter in raw data
+KPI_TARGET_COLUMNS = [kpi["target_column"] for kpi in KPI_LIST]
+
+
+# ============================================================
+# HELPER FUNCTIONS FOR DASHBOARD
+# ============================================================
+
+def get_kpi_dataframe():
+    """
+    Get a DataFrame with all KPI information for dashboard slicer.
+    
+    Returns:
+        DataFrame with columns: short_name, target_column, category, threshold_%, bad_direction
+    """
+    return pd.DataFrame(KPI_LIST)
+
+
+def get_kpi_target_column(kpi_short_name):
+    """
+    Get the target column name for a KPI short name.
+    
+    Args:
+        kpi_short_name: Short name of the KPI (e.g., "RACH Success Rate")
+        
+    Returns:
+        Target column name or None if not found
+    """
+    for kpi in KPI_LIST:
+        if kpi["short_name"] == kpi_short_name:
+            return kpi["target_column"]
+    return None
+
+
+def get_kpi_threshold(kpi_short_name):
+    """
+    Get the threshold for a KPI short name.
+    
+    Args:
+        kpi_short_name: Short name of the KPI
+        
+    Returns:
+        Threshold % or None if not found
+    """
+    for kpi in KPI_LIST:
+        if kpi["short_name"] == kpi_short_name:
+            return kpi["threshold_%"]
+    return None
+
+
+def get_kpi_category(kpi_short_name):
+    """
+    Get the category for a KPI short name.
+    
+    Args:
+        kpi_short_name: Short name of the KPI
+        
+    Returns:
+        Category name or None if not found
+    """
+    for kpi in KPI_LIST:
+        if kpi["short_name"] == kpi_short_name:
+            return kpi["category"]
+    return None
+
+
+def filter_columns_for_kpis(df, include_cell_cols=True, include_date_col=True):
+    """
+    Filter DataFrame to show only the 13 KPI columns (plus cell/date identifiers).
+    
+    Args:
+        df: Original DataFrame with all columns
+        include_cell_cols: Include cell identifier columns
+        include_date_col: Include date column
+        
+    Returns:
+        DataFrame with only KPI columns (and optional identifiers)
+    """
+    cols_to_keep = []
+    
+    if include_cell_cols:
+        cols_to_keep.extend(CELL_ID_COLS)
+    
+    if include_date_col:
+        cols_to_keep.append(DATE_COL)
+    
+    # Add KPI target columns that exist in df
+    for kpi in KPI_LIST:
+        target_col = kpi["target_column"]
+        if target_col in df.columns:
+            cols_to_keep.append(target_col)
+    
+    # Remove duplicates while preserving order
+    cols_to_keep = list(dict.fromkeys(cols_to_keep))
+    
+    # Filter to columns that exist
+    existing_cols = [c for c in cols_to_keep if c in df.columns]
+    
+    return df[existing_cols].copy()
+
+
+def melt_kpis_for_trend(df, value_name="KPI_Value"):
+    """
+    Melt DataFrame from wide to long format for trend visualization.
+    
+    This converts KPI columns into rows, creating a format suitable for
+    dashboard trend charts where KPI is a slicer/filter dimension.
+    
+    Args:
+        df: DataFrame in wide format (one column per KPI)
+        value_name: Name for the value column in melted output
+        
+    Returns:
+        DataFrame in long format with columns:
+        - Cell identifiers (eNodeB Name, Cell Name, LocalCell Id)
+        - Date
+        - KPI (short name)
+        - KPI_Value
+        - Category
+    """
+    # First, filter to only KPI columns
+    df_filtered = filter_columns_for_kpis(df, include_cell_cols=True, include_date_col=True)
+    
+    # Create mapping from target_column to short_name and category
+    col_to_kpi = {kpi["target_column"]: kpi["short_name"] for kpi in KPI_LIST}
+    col_to_category = {kpi["target_column"]: kpi["category"] for kpi in KPI_LIST}
+    
+    # Identify columns to melt
+    id_vars = list(CELL_ID_COLS) + [DATE_COL]
+    value_vars = [col for col in df_filtered.columns if col not in id_vars]
+    
+    # Melt the DataFrame
+    melted = df_filtered.melt(
+        id_vars=id_vars,
+        value_vars=value_vars,
+        var_name="KPI_Column",
+        value_name=value_name
+    )
+    
+    # Map to short names
+    melted["KPI"] = melted["KPI_Column"].map(col_to_kpi)
+    melted["Category"] = melted["KPI_Column"].map(col_to_category)
+    
+    # Drop the original column name
+    melted = melted.drop(columns=["KPI_Column"])
+    
+    # Reorder columns
+    col_order = list(CELL_ID_COLS) + [DATE_COL, "KPI", "Category", value_name]
+    melted = melted[[c for c in col_order if c in melted.columns]]
+    
+    return melted
+
+
+# ============================================================
+# DASHBOARD FUNCTIONS
+# ============================================================
 
 def show_dashboard(parent_window, output_df, summary_df, analysis_mode, selected_kpi):
     """
@@ -144,15 +432,29 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
     
     ttk.Label(controls, text="Select KPI:").pack(side="left", padx=5)
     
+    # Use only the 13 KPIs for the slicer
+    kpi_target_cols = []
+    for kpi in KPI_LIST:
+        target_col = kpi["target_column"]
+        if target_col in original_df.columns:
+            kpi_target_cols.append(target_col)
+    
+    # If no KPI columns found, fall back to numeric columns
+    if not kpi_target_cols:
+        numeric_cols = original_df.select_dtypes(include=[np.number]).columns.tolist()
+        numeric_cols = [c for c in numeric_cols if c not in [SITE_COL, CELL_COL, LOCAL_CELL_COL]]
+        kpi_target_cols = numeric_cols[:30]
+    
+    # Get current KPI column
     config = KPI_CONFIGS.get(selected_kpi, {})
     target_kpi = config.get("target_kpi", "")
     kpi_col = find_matching_column(original_df, target_kpi)
     
-    numeric_cols = original_df.select_dtypes(include=[np.number]).columns.tolist()
-    numeric_cols = [c for c in numeric_cols if c not in [SITE_COL, CELL_COL]]
+    trend_kpi = tk.StringVar(value=kpi_col if kpi_col else (kpi_target_cols[0] if kpi_target_cols else ""))
     
-    trend_kpi = tk.StringVar(value=kpi_col if kpi_col else (numeric_cols[0] if numeric_cols else ""))
-    ttk.Combobox(controls, textvariable=trend_kpi, values=numeric_cols[:30], state="readonly", width=50).pack(side="left", padx=5)
+    # Create dropdown with only 13 KPIs
+    kpi_combo = ttk.Combobox(controls, textvariable=trend_kpi, values=kpi_target_cols, state="readonly", width=50)
+    kpi_combo.pack(side="left", padx=5)
     
     chart_frame = ttk.LabelFrame(main_frame, text="Trend Chart", padding=10)
     chart_frame.pack(fill="both", expand=True, pady=5)
@@ -233,3 +535,144 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
     ttk.Label(legend_frame, text="Degraded Impact").pack(side="left")
     
     draw_chart()
+
+
+def show_kpi_slicer_window(parent_window, original_df, degraded_df=None, log_callback=None):
+    """
+    Show a KPI slicer window with the 13 analyzed KPIs.
+    
+    Args:
+        parent_window: Parent Tkinter window
+        original_df: Original input DataFrame
+        degraded_df: Optional DataFrame with degraded cells
+        log_callback: Optional logging callback
+    """
+    if original_df is None:
+        if log_callback:
+            log_callback("No data loaded")
+        return
+    
+    slicer_win = tk.Toplevel(parent_window)
+    slicer_win.title("KPI Slicer - 13 Analyzed KPIs")
+    slicer_win.geometry("1000x700")
+    
+    main_frame = ttk.Frame(slicer_win, padding=10)
+    main_frame.pack(fill="both", expand=True)
+    
+    ttk.Label(main_frame, text="KPI Slicer - Select from 13 Analyzed KPIs",
+              font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
+    
+    # KPI Selection
+    select_frame = ttk.LabelFrame(main_frame, text="KPI Selection", padding=10)
+    select_frame.pack(fill="x", pady=(0, 10))
+    
+    ttk.Label(select_frame, text="Select KPI:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+    
+    kpi_var = tk.StringVar(value=KPI_SHORT_NAMES[0])
+    kpi_combo = ttk.Combobox(select_frame, textvariable=kpi_var, values=KPI_SHORT_NAMES, state="readonly", width=30)
+    kpi_combo.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+    
+    # KPI Info
+    info_frame = ttk.LabelFrame(main_frame, text="KPI Information", padding=10)
+    info_frame.pack(fill="x", pady=(0, 10))
+    
+    info_labels = {}
+    info_fields = [
+        ("Target Column:", "target_column"),
+        ("Category:", "category"),
+        ("Threshold %:", "threshold_%"),
+        ("Bad Direction:", "bad_direction"),
+    ]
+    
+    for i, (label_text, field_key) in enumerate(info_fields):
+        ttk.Label(info_frame, text=label_text).grid(row=i, column=0, padx=5, pady=2, sticky="w")
+        info_labels[field_key] = ttk.Label(info_frame, text="", width=50, anchor="w")
+        info_labels[field_key].grid(row=i, column=1, padx=5, pady=2, sticky="w")
+    
+    def update_info(event=None):
+        selected = kpi_var.get()
+        for kpi in KPI_LIST:
+            if kpi["short_name"] == selected:
+                info_labels["target_column"].config(text=kpi["target_column"])
+                info_labels["category"].config(text=kpi["category"])
+                info_labels["threshold_%"].config(text=str(kpi["threshold_%"]))
+                info_labels["bad_direction"].config(text=kpi["bad_direction"])
+                break
+    
+    kpi_combo.bind("<<ComboboxSelected>>", update_info)
+    update_info()  # Initial update
+    
+    # Chart Frame
+    chart_frame = ttk.LabelFrame(main_frame, text="KPI Trend", padding=10)
+    chart_frame.pack(fill="both", expand=True)
+    
+    def draw_kpi_chart():
+        for w in chart_frame.winfo_children():
+            w.destroy()
+        
+        selected_kpi = kpi_var.get()
+        target_col = get_kpi_target_column(selected_kpi)
+        
+        if not target_col or target_col not in original_df.columns:
+            ttk.Label(chart_frame, text=f"Column '{target_col}' not found in data").pack()
+            return
+        
+        df = original_df.copy()
+        
+        if DATE_COL not in df.columns:
+            ttk.Label(chart_frame, text="Date column not found").pack()
+            return
+        
+        df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors='coerce')
+        df = df.dropna(subset=[DATE_COL])
+        
+        # Calculate daily average
+        daily_avg = df.groupby(DATE_COL)[target_col].mean().reset_index()
+        daily_avg.columns = ['Date', 'Average']
+        
+        if daily_avg.empty:
+            ttk.Label(chart_frame, text="No data to plot").pack()
+            return
+        
+        fig = Figure(figsize=(10, 4), dpi=100)
+        ax = fig.add_subplot(111)
+        
+        dates = daily_avg['Date'].tolist()
+        x = range(len(dates))
+        labels = [d.strftime('%m/%d') if hasattr(d, 'strftime') else str(d)[:10] for d in dates]
+        
+        ax.plot(x, daily_avg['Average'].values, 'b-o', linewidth=2, markersize=4)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
+        ax.set_xlabel('Date')
+        ax.set_ylabel(selected_kpi)
+        ax.set_title(f'{selected_kpi} - Daily Trend')
+        ax.grid(True, alpha=0.3)
+        
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+    
+    btn_frame = ttk.Frame(main_frame)
+    btn_frame.pack(fill="x", pady=5)
+    ttk.Button(btn_frame, text="Show Trend", command=draw_kpi_chart).pack(side="left", padx=5)
+    
+    draw_kpi_chart()  # Initial draw
+
+
+# ============================================================
+# CONVENIENCE: Print KPI list
+# ============================================================
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("KPI LIST FOR DASHBOARD SLICER (13 KPIs)")
+    print("=" * 60)
+    print()
+    for i, kpi in enumerate(KPI_LIST, 1):
+        print(f"{i:2d}. {kpi['short_name']}")
+        print(f"    Target: {kpi['target_column']}")
+        print(f"    Category: {kpi['category']}")
+        print(f"    Threshold: {kpi['threshold_%']}%")
+        print()

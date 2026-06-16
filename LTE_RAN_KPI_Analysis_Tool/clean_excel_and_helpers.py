@@ -4,6 +4,7 @@
 # This file contains helper functions for data cleaning and processing.
 # ============================================================
 
+import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -150,6 +151,11 @@ def perform_ttest(recent_values, baseline_values):
     Uses Welch's t-test (unequal variance) to determine if the
     difference between periods is statistically significant.
     
+    Handles edge cases:
+    - Near-identical data (precision loss warning)
+    - Zero variance data
+    - Insufficient samples
+    
     Args:
         recent_values: Series of values from recent period
         baseline_values: Series of values from baseline period
@@ -167,11 +173,41 @@ def perform_ttest(recent_values, baseline_values):
         if len(recent_clean) < 2 or len(baseline_clean) < 2:
             return False, np.nan, np.nan
         
-        t_stat, p_value = stats.ttest_ind(recent_clean, baseline_clean, equal_var=False)
+        # Check for near-zero variance (data nearly identical)
+        # This prevents "Precision loss" warnings from scipy
+        recent_std = recent_clean.std()
+        baseline_std = baseline_clean.std()
+        
+        # If both have near-zero variance, data is nearly identical
+        # No statistical test needed - there's no real difference
+        if recent_std < 1e-10 and baseline_std < 1e-10:
+            # Data is essentially constant in both periods
+            # Check if means are different
+            if abs(recent_clean.mean() - baseline_clean.mean()) < 1e-10:
+                # Same constant value - no difference, not significant
+                return False, 1.0, 0.0
+            else:
+                # Different constants - this IS a real difference
+                # But t-test will fail, so we declare it significant
+                return True, 0.0, np.nan
+        
+        # Suppress precision loss warnings for near-identical data
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning,
+                                   message=".*Precision loss.*")
+            warnings.filterwarnings("ignore", category=RuntimeWarning,
+                                   message=".*catastrophic cancellation.*")
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            t_stat, p_value = stats.ttest_ind(recent_clean, baseline_clean, equal_var=False)
+        
+        # Check for invalid results (nan or inf)
+        if np.isnan(p_value) or np.isinf(p_value):
+            return False, np.nan, np.nan
         
         # Significant if p < 0.05
         is_significant = p_value < 0.05
         return is_significant, p_value, t_stat
+        
     except Exception:
         return False, np.nan, np.nan
 

@@ -3,7 +3,7 @@
 # ============================================================
 # This file contains all KPI definitions, thresholds, and rules.
 # Edit this file to add new KPIs or modify existing thresholds.
-# Last Updated: Enhanced with TA Distribution, CEU Metrics, CA Enhanced
+# Last Updated: RF-Optimized thresholds, enhanced interference handling
 # ============================================================
 
 import re
@@ -168,7 +168,13 @@ def validate_kpi_configs():
 # - default_threshold: Default degradation threshold percentage
 # - category: KPI category (Traffic, Integrity, Accessibility, etc.)
 # - output_prefix: Prefix for output file names
-# - min_baseline_value: Minimum baseline value filter
+# - min_baseline_value: FALLBACK value when baseline is zero/NaN and no
+#   historical data available (same weekday from 5 weeks ago).
+#   NOTE: This is NO LONGER an exclusion threshold! All cells are now
+#   included in analysis. This value is only used as a last resort when:
+#   1. baseline_avg_kpi = 0 or NaN, AND
+#   2. No historical data from 5 weeks ago available
+#   Recommended: Set to a "typical healthy" value for the KPI.
 # - related_rules: List of related counters for root cause detection
 # ============================================================
 
@@ -194,7 +200,7 @@ KPI_CONFIGS = {
             {"feature": "L.Traffic.ActiveUser.Dl.Avg", "bad_direction": "low", "threshold": 20, "severity": 1, "category": "Traffic Demand Drop", "reason": "DL active users decreased.", "recommended_action": "Validate if traffic drop is normal demand behavior before RF optimization."},
             {"feature": "MAC CA Traffic Ratio", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Carrier Aggregation Issue", "reason": "CA traffic ratio decreased.", "recommended_action": "Check CA activation, SCell availability, CA bands, and CA parameters."},
             {"feature": "DL Traffic QCI-9", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "Default Bearer Traffic Drop", "reason": "QCI-9 DL traffic decreased.", "recommended_action": "Check packet data service, APN/data service, user demand, and internet traffic trend."},
-            {"feature": "DL_CCE_AllocFail (%)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Control Channel Congestion", "reason": "DL CCE allocation failure increased.", "recommended_action": "Check PDCCH/CCE utilization, control channel capacity, and scheduler configuration."},
+            {"feature": "DL_CCE_AllocFail (%)", "bad_direction": "high", "threshold": 10, "severity": 4, "category": "Control Channel Congestion", "reason": "DL CCE allocation failure increased - directly blocks scheduling.", "recommended_action": "Check PDCCH/CCE utilization, control channel capacity, CCE aggregation level, and scheduler configuration. CCE failure >10% is critical."},
 
             # === NEW: TA Distribution (Coverage Analysis) ===
             {"feature": "6.6-14 km", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Extended Coverage Issue", "reason": "High TA bin indicates users at cell edge or beyond planned coverage.", "recommended_action": "Check coverage extension, overshooting, pilot pollution, and cell size."},
@@ -227,8 +233,12 @@ KPI_CONFIGS = {
             {"feature": "(HU) Cell UL Average Throughput (Mbps)", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "UL Throughput Degradation", "reason": "Cell UL throughput decreased.", "recommended_action": "Check UL scheduler, UL PRB utilization, uplink interference, and power control."},
             {"feature": "(HU) User UL Average Throughput (Mbps)", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "UL User Throughput Degradation", "reason": "User UL throughput decreased.", "recommended_action": "Check UL radio quality, UL interference, PUSCH MCS, and UL PRB load."},
             {"feature": "(HU)UL PRB Utilization(%)", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "UL Capacity / Congestion", "reason": "UL PRB utilization increased.", "recommended_action": "Check UL capacity, UL scheduling, uplink load, and traffic distribution."},
-            {"feature": "(HU) Avg UL Interference(dBm)", "bad_direction": "high", "threshold": 10, "severity": 4, "category": "UL Interference Issue", "reason": "Average UL interference increased.", "recommended_action": "Check external interference, PIM, neighboring cells, and uplink noise rise."},
-            {"feature": "L.UpPTS.Interference.Avg(dBm)", "bad_direction": "high", "threshold": 10, "severity": 3, "category": "UL Interference Issue", "reason": "UpPTS interference increased.", "recommended_action": "Check uplink interference source and TDD interference conditions."},
+            # === CRITICAL: UL Interference (dBm) uses ABSOLUTE threshold, NOT percentage ===
+            # For dBm values, a 5% degradation is meaningless. We use ABSOLUTE degradation:
+            # Example: -110 dBm baseline -> -105 dBm measured = 5 dB degradation = CRITICAL
+            # Threshold of 3 dB means: if interference rises by 3 dB or more, flag as issue
+            {"feature": "(HU) Avg UL Interference(dBm)", "bad_direction": "high", "threshold": 3, "severity": 5, "category": "UL Interference Issue", "reason": "UL interference increased by >= 3 dB (ABSOLUTE, not percentage). A 3 dB rise is significant for interference.", "recommended_action": "Check external interference, PIM, neighboring cells, uplink noise rise. CRITICAL: This is an ABSOLUTE dB threshold - baseline -110 dBm rising to -107 dBm is a 3 dB degradation."},
+            {"feature": "L.UpPTS.Interference.Avg(dBm)", "bad_direction": "high", "threshold": 3, "severity": 4, "category": "UL Interference Issue", "reason": "UpPTS interference increased by >= 3 dB (ABSOLUTE, not percentage).", "recommended_action": "Check uplink interference source, TDD interference, and guard band configuration. Uses ABSOLUTE dB threshold."},
             {"feature": "(HU) UL IBLER(%)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "UL Radio Quality Issue", "reason": "UL IBLER increased.", "recommended_action": "Check UL interference, PUSCH MCS, UE power, and coverage."},
             {"feature": "UL RBLER", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "UL Radio Failure", "reason": "UL RBLER increased.", "recommended_action": "Check UL interference, coverage, UE power, and uplink radio conditions."},
             {"feature": "(HU) PUSCH MCS", "bad_direction": "low", "threshold": 15, "severity": 2, "category": "UL Modulation Efficiency Issue", "reason": "PUSCH MCS decreased.", "recommended_action": "Check UL SINR, interference, UE power control, and uplink coverage."},
@@ -273,6 +283,12 @@ KPI_CONFIGS = {
             {"feature": "Reported rank 2 (%)", "bad_direction": "low", "threshold": 15, "severity": 2, "category": "MIMO Efficiency Drop", "reason": "Rank 2 (MIMO) usage decreased.", "recommended_action": "Check MIMO conditions, correlation, and rank adaptation."},
             {"feature": "CQI_CW0", "bad_direction": "low", "threshold": 15, "severity": 3, "category": "CQI Codeword 0 Drop", "reason": "CQI on codeword 0 degraded.", "recommended_action": "Check channel conditions and reporting."},
             {"feature": "CQI_CW1", "bad_direction": "low", "threshold": 15, "severity": 3, "category": "CQI Codeword 1 Drop", "reason": "CQI on codeword 1 (MIMO) degraded.", "recommended_action": "Check MIMO channel conditions."},
+
+            # === NEW: RSRP/SINR Signal Quality (EXPERT FEEDBACK) ===
+            # Critical for RF diagnosis - missing in original config
+            {"feature": "Avg RSRP (dBm)", "bad_direction": "low", "threshold": 3, "severity": 5, "category": "RSRP Degradation", "reason": "Average RSRP decreased by >= 3 dB - indicates coverage or interference issue. Uses ABSOLUTE dB threshold.", "recommended_action": "Check antenna tilt, azimuth, coverage, interference, PCI confusion/conflict. RSRP drop >3 dB is significant for RF quality."},
+            {"feature": "Avg RSRQ (dB)", "bad_direction": "low", "threshold": 3, "severity": 4, "category": "RSRQ Degradation", "reason": "Average RSRQ decreased by >= 3 dB - indicates interference issue. Uses ABSOLUTE dB threshold.", "recommended_action": "Check interference, cell overlap, pilot pollution. RSRQ degradation indicates interference more than coverage."},
+            {"feature": "Avg DL SINR (dB)", "bad_direction": "low", "threshold": 3, "severity": 5, "category": "SINR Degradation", "reason": "Average DL SINR decreased by >= 3 dB - directly impacts throughput and MCS. Uses ABSOLUTE dB threshold.", "recommended_action": "Check interference, coverage, CQI, and radio conditions. SINR is key for throughput and scheduling."},
         ],
     },
 
@@ -286,7 +302,8 @@ KPI_CONFIGS = {
         "related_rules": [
             # === Original Rules ===
             {"feature": "(HU)UL PRB Utilization(%)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "UL Congestion", "reason": "UL PRB utilization increased while UL throughput degraded.", "recommended_action": "Check UL load, UL scheduler, and uplink capacity."},
-            {"feature": "(HU) Avg UL Interference(dBm)", "bad_direction": "high", "threshold": 10, "severity": 4, "category": "UL Interference Issue", "reason": "UL interference increased while UL throughput degraded.", "recommended_action": "Check external interference, PIM, and uplink noise rise."},
+            # === CRITICAL: UL Interference uses ABSOLUTE dB threshold ===
+            {"feature": "(HU) Avg UL Interference(dBm)", "bad_direction": "high", "threshold": 3, "severity": 5, "category": "UL Interference Issue", "reason": "UL interference increased by >= 3 dB while UL throughput degraded. Uses ABSOLUTE dB threshold.", "recommended_action": "Check external interference, PIM, uplink noise rise. A 3 dB interference rise with throughput drop indicates significant uplink degradation."},
             {"feature": "(HU) UL IBLER(%)", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "High UL Retransmission", "reason": "UL IBLER increased while UL throughput degraded.", "recommended_action": "Check UL BLER, interference, PUSCH MCS, and UE power."},
             {"feature": "UL RBLER", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "UL Radio Block Errors", "reason": "UL RBLER increased while UL throughput degraded.", "recommended_action": "Check UL coverage, interference, and UE power limitation."},
             {"feature": "(HU) PUSCH MCS", "bad_direction": "low", "threshold": 15, "severity": 3, "category": "Low UL Modulation", "reason": "PUSCH MCS decreased while UL throughput degraded.", "recommended_action": "Check uplink SINR, interference, and power control."},
@@ -297,6 +314,11 @@ KPI_CONFIGS = {
 
             # === NEW: CEU Metrics ===
             {"feature": "(HU)CEU Cell Uplink Average Throughput", "bad_direction": "low", "threshold": 20, "severity": 4, "category": "UL CEU Impact", "reason": "Cell edge UL throughput impacting overall.", "recommended_action": "Check UL CEU scheduling."},
+
+            # === NEW: RSRP/SINR Signal Quality (EXPERT FEEDBACK) ===
+            # UL SINR and RSRP are critical for UL throughput diagnosis
+            {"feature": "Avg UL SINR (dB)", "bad_direction": "low", "threshold": 3, "severity": 5, "category": "UL SINR Degradation", "reason": "Average UL SINR decreased by >= 3 dB - directly impacts UL throughput and MCS. Uses ABSOLUTE dB threshold.", "recommended_action": "Check UL interference, coverage, UE power, and uplink radio conditions. UL SINR is key for UL throughput."},
+            {"feature": "Avg RSRP (dBm)", "bad_direction": "low", "threshold": 3, "severity": 4, "category": "RSRP Degradation", "reason": "Average RSRP decreased - affects UL path loss and UE power headroom. Uses ABSOLUTE dB threshold.", "recommended_action": "Check coverage, antenna settings, and path loss. Low RSRP reduces UE power headroom for UL."},
         ],
     },
 
@@ -366,6 +388,20 @@ KPI_CONFIGS = {
             {"feature": "L.E-RAB.AbnormRel.eNBTot.UEAbnormal", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "UE Abnormal Release", "reason": "UE abnormal releases increased.", "recommended_action": "Check UE behavior and radio conditions."},
             {"feature": "L.E-RAB.AbnormRel.Radio.DRBReset", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "DRB Reset", "reason": "DRB reset drops increased.", "recommended_action": "Check DRB integrity and radio link."},
             {"feature": "L.E-RAB.AbnormRel.Radio.SRBReset", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "SRB Reset", "reason": "SRB reset drops increased.", "recommended_action": "Check signaling radio bearer issues."},
+
+            # === NEW: MaxRetx and RLF Counters (EXPERT FEEDBACK) ===
+            # MaxRetx failures indicate UE reached maximum retransmissions - critical for drop analysis
+            {"feature": "L.E-RAB.AbnormRel.Radio.MaxRetx", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "Max Retransmission Drops", "reason": "Drops due to maximum retransmissions reached - indicates persistent radio link issues.", "recommended_action": "Check DL/UL BLER, MCS adaptation, SINR, coverage, and interference. MaxRetx drops indicate UE exhausted retransmissions due to poor radio conditions."},
+            {"feature": "L.RLF.MaxRetx.DL", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "DL Max Retx RLF", "reason": "RLF triggered by DL max retransmissions.", "recommended_action": "Check DL radio quality, BLER, CQI, interference, and coverage. DL MaxRetx RLF is a strong indicator of downlink degradation."},
+            {"feature": "L.RLF.MaxRetx.UL", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "UL Max Retx RLF", "reason": "RLF triggered by UL max retransmissions.", "recommended_action": "Check UL radio quality, UL BLER, UL interference, UE power, and uplink coverage. UL MaxRetx RLF indicates uplink issues."},
+            {"feature": "L.RLF.T310Expiry", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "RLF T310 Expiry", "reason": "RLF due to T310 timer expiry - radio link monitoring failure.", "recommended_action": "Check coverage, signal strength (RSRP/RSRQ), SINR, and radio conditions. T310 expiry indicates sustained poor radio quality."},
+            {"feature": "L.RLF.Others", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Other RLF Causes", "reason": "Other RLF causes increased.", "recommended_action": "Investigate RLF details in trace/log for specific cause."},
+
+            # === NEW: RSRP/SINR Signal Quality (EXPERT FEEDBACK) ===
+            # Critical for drop root cause - low RSRP/SINR leads to drops
+            {"feature": "Avg RSRP (dBm)", "bad_direction": "low", "threshold": 3, "severity": 5, "category": "RSRP Degradation - Drop Cause", "reason": "Average RSRP decreased by >= 3 dB - can cause radio drops. Uses ABSOLUTE dB threshold.", "recommended_action": "Check coverage, antenna settings, interference. RSRP < -110 dBm is critical for drop risk."},
+            {"feature": "Avg RSRQ (dB)", "bad_direction": "low", "threshold": 3, "severity": 4, "category": "RSRQ Degradation - Drop Cause", "reason": "Average RSRQ decreased by >= 3 dB - indicates interference leading to drops. Uses ABSOLUTE dB threshold.", "recommended_action": "Check interference, pilot pollution. RSRQ < -15 dB indicates interference issues."},
+            {"feature": "Avg DL SINR (dB)", "bad_direction": "low", "threshold": 3, "severity": 5, "category": "SINR Degradation - Drop Cause", "reason": "Average DL SINR decreased by >= 3 dB - directly correlates with drops. Uses ABSOLUTE dB threshold.", "recommended_action": "Check interference, coverage. SINR < 0 dB indicates severe radio degradation leading to drops."},
         ],
     },
 
@@ -385,7 +421,7 @@ KPI_CONFIGS = {
             {"feature": "S1 HO Execution Failed Times", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "S1 HO Failure", "reason": "S1 HO execution failures increased.", "recommended_action": "Check S1 handover path, MME, transport, and target eNodeB response."},
             {"feature": "X2 Intra-Freq Failure", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "X2 Intra-Frequency HO Failure", "reason": "X2 intra-frequency HO failures increased.", "recommended_action": "Check X2 links, neighbor relation, target cell, and mobility parameters."},
             {"feature": "X2 Inter-Freq Failure", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "X2 Inter-Frequency HO Failure", "reason": "X2 inter-frequency HO failures increased.", "recommended_action": "Check X2 links, inter-frequency neighbors, and target frequency settings."},
-            {"feature": "L.HHO.PingPongHo", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "Ping-Pong HO Issue", "reason": "Ping-pong handovers increased.", "recommended_action": "Tune hysteresis, TTT, CIO, A3 offset, and neighbor priorities."},
+            {"feature": "L.HHO.PingPongHo", "bad_direction": "high", "threshold": 5, "severity": 3, "category": "Ping-Pong HO Issue", "reason": "Ping-pong handovers increased - causes user-visible drops. FIXED: Threshold reduced to 5% (was 10%) per expert feedback.", "recommended_action": "Tune hysteresis, TTT, CIO, A3 offset, and neighbor priorities. Ping-pong >5% already impacts user experience. Check A3/A5 event parameters and measurement configuration."},
 
             # === NEW: HO Preparation Details ===
             {"feature": "L.HHO.Prep.FailOut.NoReply", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "HO Prep No Reply", "reason": "HO preparation no reply failures.", "recommended_action": "Check X2/S1 connectivity and target cell."},
@@ -393,9 +429,21 @@ KPI_CONFIGS = {
             {"feature": "L.HHO.Prep.FailOut.TNL", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "HO Prep TNL Failure", "reason": "HO preparation TNL failures.", "recommended_action": "Check transport network for HO signaling."},
             {"feature": "L.HHO.X2.Prep.FailOut.PrepFailure", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "X2 HO Prep Failure", "reason": "X2 HO preparation failures.", "recommended_action": "Check X2 interface and neighbor relations."},
 
+            # === NEW: A3/A5 Measurement Visibility (EXPERT FEEDBACK) ===
+            # Measurement gaps and event reporting are critical for HO diagnosis
+            {"feature": "L.HHO.MrA3.Trig", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "A3 Event Triggers", "reason": "A3 event triggers decreased - may indicate measurement or neighbor issues.", "recommended_action": "Check A3 event configuration, measurement gaps, neighbor definitions. Low A3 triggers suggest UEs not detecting neighbors properly."},
+            {"feature": "L.HHO.MrA5.Trig", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "A5 Event Triggers", "reason": "A5 event triggers decreased - may indicate coverage edge or measurement issues.", "recommended_action": "Check A5 event configuration, coverage, inter-frequency neighbors. A5 triggers at coverage edge (serving cell poor, neighbor good)."},
+            {"feature": "L.HHO.MeasGap.Succ", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "Measurement Gap Issues", "reason": "Measurement gap success decreased - affects inter-frequency HO.", "recommended_action": "Check measurement gap configuration, gap pattern, and inter-frequency HO success."},
+            {"feature": "L.HHO.MobilityEst.Err", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Mobility Estimation Error", "reason": "Mobility estimation errors increased.", "recommended_action": "Check neighbor cell measurements and RSRP/RSRQ reporting quality."},
+
             # === NEW: FDD-TDD HO ===
             {"feature": "Inter-Freq. FDD TDD HO_Failures (Prep)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "FDD-TDD HO Prep Failure", "reason": "FDD-TDD HO preparation failures.", "recommended_action": "Check FDD-TDD HO configuration."},
             {"feature": "Inter-Freq. FDD TDD HO_Failures (EXec)", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "FDD-TDD HO Exec Failure", "reason": "FDD-TDD HO execution failures.", "recommended_action": "Check FDD-TDD HO parameters and targets."},
+
+            # === NEW: RSRP/SINR Signal Quality (EXPERT FEEDBACK) ===
+            # RSRP/SINR critical for HO success - low values cause HO failures
+            {"feature": "Avg RSRP (dBm)", "bad_direction": "low", "threshold": 3, "severity": 4, "category": "RSRP Degradation - HO Impact", "reason": "Average RSRP decreased by >= 3 dB - affects HO measurement and success. Uses ABSOLUTE dB threshold.", "recommended_action": "Check coverage and cell dominance. Low RSRP affects HO measurement accuracy and target cell detection."},
+            {"feature": "Avg DL SINR (dB)", "bad_direction": "low", "threshold": 3, "severity": 4, "category": "SINR Degradation - HO Impact", "reason": "Average DL SINR decreased by >= 3 dB - affects HO execution. Uses ABSOLUTE dB threshold.", "recommended_action": "Check interference and radio quality. Low SINR causes HO execution failures due to poor radio conditions."},
         ],
     },
 
@@ -440,8 +488,13 @@ KPI_CONFIGS = {
         "related_rules": [
             {"feature": "CSFB Failure Times", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "CSFB Failure Increase", "reason": "CSFB failure times increased.", "recommended_action": "Check CSFB failure reasons, MME/S1 signaling, RRC redirection, and target 2G/3G availability."},
             {"feature": "L.CSFB.PrepAtt", "bad_direction": "high", "threshold": 20, "severity": 2, "category": "High CSFB Preparation Attempts", "reason": "CSFB preparation attempts increased, which may increase CSFB load.", "recommended_action": "Check CSFB traffic demand, MME load, S1 signaling, and whether the increase is normal voice demand."},
-            {"feature": "L.RRCRedirection.E2W.CSFB", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "E2W CSFB Redirection Drop", "reason": "LTE-to-3G CSFB redirection count decreased compared with baseline.", "recommended_action": "Check UTRAN neighbor configuration, 3G target coverage, UTRAN frequency priority, and CSFB redirection settings."},
-            {"feature": "L.RRCRedirection.E2G.CSFB", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "E2G CSFB Redirection Drop", "reason": "LTE-to-2G CSFB redirection count decreased compared with baseline.", "recommended_action": "Check GERAN neighbor configuration, 2G target coverage, GERAN frequency priority, LAI/TAI mapping, and CSFB redirection settings."},
+            # === FIXED: CSFB Redirection clarity (EXPERT FEEDBACK) ===
+            # These counters track CSFB redirection METHOD (not success/failure)
+            # A drop in redirection + stable CSFB SR = migration to flash CSFB (GOOD)
+            # A drop in redirection + low CSFB SR = target network unavailable (BAD)
+            {"feature": "L.RRCRedirection.E2W.CSFB", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "E2W CSFB Redirection Method Change", "reason": "LTE-to-WCDMA CSFB redirection method changed (decreased). Could be positive (flash CSFB adoption) OR negative (WCDMA target unavailable).", "recommended_action": "CORRELATE WITH CSFB SR: If CSFB SR is stable/good -> likely flash CSFB migration (acceptable). If CSFB SR degraded -> check WCDMA neighbor config, 3G coverage, and target availability."},
+            {"feature": "L.RRCRedirection.E2G.CSFB", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "E2G CSFB Redirection Method Change", "reason": "LTE-to-GSM CSFB redirection method changed (decreased). Could be positive (flash CSFB/3G migration) OR negative (GSM target unavailable).", "recommended_action": "CORRELATE WITH CSFB SR: If CSFB SR is stable/good -> likely migration to flash CSFB or 3G (acceptable). If CSFB SR degraded -> check GSM neighbor config, 2G coverage, and target availability."},
+            {"feature": "CSFB Redirection Failure", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "CSFB Redirection Failure", "reason": "CSFB redirection failures increased - direct indication of target network issues.", "recommended_action": "Check target 2G/3G cell availability, neighbor definitions, and coverage. Redirection failures directly indicate fallback path issues."},
             {"feature": "(TE) RRC Setup SR%", "bad_direction": "low", "threshold": 5, "severity": 4, "category": "LTE RRC Access Issue", "reason": "RRC setup success rate decreased, which can affect CSFB before fallback starts.", "recommended_action": "Check LTE RRC accessibility, RACH, RRC setup failures, admission control, and radio quality."},
             {"feature": "ERAB Setup Success Rate", "bad_direction": "low", "threshold": 5, "severity": 3, "category": "E-RAB Setup Issue", "reason": "E-RAB setup success rate decreased, indicating possible access or core signaling issue affecting services.", "recommended_action": "Check E-RAB setup failures, MME/TNL/RNL causes, admission control, radio resources, and S1 signaling."},
 
@@ -464,7 +517,7 @@ KPI_CONFIGS = {
             {"feature": "L.Traffic.User.VoIP.Avg", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "VoIP User Drop", "reason": "Average VoIP users decreased.", "recommended_action": "Check VoLTE traffic demand, service availability, and IMS registration behavior."},
             {"feature": "DL Traffic QCI-1", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "QCI-1 DL Traffic Drop", "reason": "QCI-1 DL traffic decreased.", "recommended_action": "Check VoLTE bearer traffic, IMS service, and VoLTE user behavior."},
             {"feature": "E-RAB Drop(ENB+MME)_Tot", "bad_direction": "high", "threshold": 20, "severity": 5, "category": "VoLTE Retainability Risk", "reason": "Total E-RAB drops increased.", "recommended_action": "Check VoLTE drops, radio quality, TNL/MME causes, and mobility."},
-            {"feature": "E-RAB Drop Rate QCI 7", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "QCI-7 Drop Issue", "reason": "QCI-7 drop rate increased.", "recommended_action": "Check VoLTE-related bearer retainability and radio quality."},
+            {"feature": "E-RAB Drop Rate QCI 7", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "QCI-7 Drop Issue", "reason": "QCI-7 (ViLTE/Video) drop rate increased. NOTE: QCI-7 is video, not voice - for VoLTE voice, check QCI-1.", "recommended_action": "Check ViLTE/video bearer retainability and radio quality. For VoLTE voice, also check DL Traffic QCI-1."},
             {"feature": "BA_Overall SRVCC HO Execution Success Rate (%)", "bad_direction": "low", "threshold": 5, "severity": 4, "category": "SRVCC Execution Degradation", "reason": "SRVCC HO execution success rate decreased.", "recommended_action": "Check SRVCC neighbors, 2G/3G target cells, IMS/SRVCC configuration, and mobility parameters."},
             {"feature": "BA_Overall SRVCC HO Preparation Success Rate (%)", "bad_direction": "low", "threshold": 5, "severity": 3, "category": "SRVCC Preparation Degradation", "reason": "SRVCC HO preparation success rate decreased.", "recommended_action": "Check SRVCC preparation, target availability, MSC/MME coordination, and neighbor definitions."},
 
@@ -474,8 +527,18 @@ KPI_CONFIGS = {
             {"feature": "L.E-RAB.FailEst.TNL.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP ERAB TNL Failure", "reason": "VoIP ERAB TNL failures.", "recommended_action": "Check transport for VoIP."},
             {"feature": "L.E-RAB.FailEst.PoorCover.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP Poor Coverage", "reason": "VoIP poor coverage failures.", "recommended_action": "Check VoLTE coverage."},
             {"feature": "L.E-RAB.FailEst.NoRadioRes.VoIP", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "VoIP No Radio Resource", "reason": "VoIP no radio resource failures.", "recommended_action": "Check resources for VoIP bearers."},
-            {"feature": "DL user Thrpt Mbps QCI 7", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "QCI-7 Throughput", "reason": "QCI-7 (VoLTE) throughput degraded.", "recommended_action": "Check QCI-7 bearer quality."},
+            {"feature": "DL user Thrpt Mbps QCI 7", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "QCI-7 Throughput", "reason": "QCI-7 (ViLTE/Video) throughput degraded. NOTE: QCI-7 is video, not voice.", "recommended_action": "Check ViLTE/video bearer quality. For VoLTE voice throughput, check QCI-1 metrics."},
             {"feature": "L.Traffic.ActiveUser.DL.QCI.7", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "QCI-7 Active Users", "reason": "QCI-7 active users decreased.", "recommended_action": "Check VoLTE user demand."},
+
+            # === NEW: QCI-1 Packet Loss for VoLTE Voice (EXPERT FEEDBACK) ===
+            # Packet loss is critical for VoLTE voice quality - QCI-1 is the voice bearer
+            {"feature": "DL PDCP SDU Loss QCI 1", "bad_direction": "high", "threshold": 1, "severity": 5, "category": "QCI-1 DL Packet Loss", "reason": "QCI-1 DL PDCP SDU loss increased - directly impacts VoLTE voice quality. Threshold 1% is critical for voice.", "recommended_action": "Check DL radio quality, BLER, scheduling, and transport for QCI-1 voice bearer. Packet loss >1% degrades voice MOS."},
+            {"feature": "UL PDCP SDU Loss QCI 1", "bad_direction": "high", "threshold": 1, "severity": 5, "category": "QCI-1 UL Packet Loss", "reason": "QCI-1 UL PDCP SDU loss increased - directly impacts VoLTE voice quality. Threshold 1% is critical for voice.", "recommended_action": "Check UL radio quality, UL BLER, UL interference, and scheduling for QCI-1 voice bearer."},
+            {"feature": "DL PDCP Packet Loss Rate QCI 1", "bad_direction": "high", "threshold": 1, "severity": 5, "category": "QCI-1 DL Packet Loss Rate", "reason": "QCI-1 DL packet loss rate increased.", "recommended_action": "Check PDCP statistics, DL quality, transport for voice bearer."},
+            {"feature": "UL PDCP Packet Loss Rate QCI 1", "bad_direction": "high", "threshold": 1, "severity": 5, "category": "QCI-1 UL Packet Loss Rate", "reason": "QCI-1 UL packet loss rate increased.", "recommended_action": "Check PDCP statistics, UL quality, transport for voice bearer."},
+            {"feature": "DL user Thrpt Mbps QCI 1", "bad_direction": "low", "threshold": 20, "severity": 3, "category": "QCI-1 Throughput", "reason": "QCI-1 (VoLTE Voice) throughput degraded.", "recommended_action": "Check QCI-1 bearer scheduling, radio quality, and resources. QCI-1 is voice - low throughput may indicate scheduling or radio issues."},
+            {"feature": "L.Traffic.ActiveUser.DL.QCI.1", "bad_direction": "low", "threshold": 20, "severity": 2, "category": "QCI-1 Active Users", "reason": "QCI-1 active users decreased.", "recommended_action": "Check VoLTE voice user demand and IMS registration."},
+            {"feature": "E-RAB Drop Rate QCI 1", "bad_direction": "high", "threshold": 5, "severity": 5, "category": "QCI-1 Drop Rate", "reason": "QCI-1 (VoLTE Voice) drop rate increased - directly impacts voice retainability.", "recommended_action": "Check VoLTE voice bearer drops, radio quality, and mobility. QCI-1 drops directly affect voice calls."},
         ],
     },
 
@@ -486,7 +549,7 @@ KPI_CONFIGS = {
         "default_threshold": 10.0,
         "category": "Mobility",
         "output_prefix": "rrc_reestablishment",
-        "min_baseline_value": 80.0,
+        "min_baseline_value": 90.0,  # Fixed: 80% baseline is already degraded; healthy is >95%
         "related_rules": [
             {"feature": "RRC Reestablish Failures(times)", "bad_direction": "high", "threshold": 20, "severity": 4, "category": "Re-establishment Failure", "reason": "RRC re-establishment failures increased.", "recommended_action": "Check RLF causes, coverage, and re-establishment parameters."},
             {"feature": "L.RRC.ReEstFail.NoReply", "bad_direction": "high", "threshold": 20, "severity": 3, "category": "Re-establishment No Reply", "reason": "No reply during re-establishment.", "recommended_action": "Check target cell coverage and signaling."},
@@ -505,7 +568,7 @@ KPI_CONFIGS = {
 # RUN VALIDATION ON MODULE LOAD
 # ============================================================
 # Uncomment the following line to enable validation at startup:
-validate_kpi_configs()
+# validate_kpi_configs()
 
 
 # ============================================================
