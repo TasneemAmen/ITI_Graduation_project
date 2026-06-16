@@ -213,6 +213,14 @@ def analyze_selected_kpi(
     # made the tool exclude every cell. Now it scales sensibly.
     MIN_PAIRED_DAYS = 1 if expected_recent <= 2 else 2
     MIN_RECENT_COVERAGE = 0.5
+    # FIX (Flaw 2): the reported degradation% is still the mean of per-day
+    # ratios (magnitude-aware, good for ranking), but a single transient spike
+    # must not flip a cell to "Degraded" on its own. A cell is only flagged
+    # when at least this fraction of its paired days are individually at/above
+    # the threshold — i.e. the degradation is day-level *consistent*, not a
+    # one-off. Exposed via the new degraded_days_count / degraded_days_ratio_%
+    # audit columns so the decision is transparent.
+    MIN_DEGRADED_DAY_FRACTION = 0.5
 
     # Pre-build per-cell-per-date lookups (one row per cell+date).
     # This makes per-cell lookup O(1) instead of repeated filtering.
@@ -245,6 +253,7 @@ def analyze_selected_kpi(
     daily_ratios_strs = []
     min_pair_ratios = []        # FIX (Flaw 8): numeric audit column
     max_pair_ratios = []        # FIX (Flaw 8): numeric audit column
+    degraded_day_counts = []    # FIX (Flaw 2): per-cell count of days >= threshold
     rows_to_drop = []           # indices of cells that fail the paired-days check
 
     for idx, row in comparison.iterrows():
@@ -297,7 +306,15 @@ def analyze_selected_kpi(
                 b_date = r_date - pd.Timedelta(days=7)
                 b_val = cell_baseline_dict.get(b_date)
 
-            if b_val is None or pd.isna(b_val) or b_val == 0:
+            # FIX (Flaw 1): a per-pair baseline below the KPI's
+            # min_baseline_value yields a tiny denominator and a wildly
+            # unstable ratio that can dominate the unweighted mean and hide a
+            # real degradation. Skip such pairs — consistent with the
+            # average-level min_baseline_value filter applied earlier. A dropped
+            # pair lowers confidence_score_% and is omitted from daily_ratios,
+            # so the exclusion stays visible to the engineer.
+            if (b_val is None or pd.isna(b_val) or b_val == 0
+                    or (min_baseline_value > 0 and b_val < min_baseline_value)):
                 continue
 
             ratio = calculate_degradation(r_val, b_val, bad_direction)
@@ -310,6 +327,10 @@ def analyze_selected_kpi(
         # analysis (Excel formulas, etc.). NaN when no pairs exist.
         min_ratio = float(np.min(ratios)) if ratios else np.nan
         max_ratio = float(np.max(ratios)) if ratios else np.nan
+        # FIX (Flaw 2): how many of this cell's paired days are individually
+        # at/above the degradation threshold. Used for the consistency gate so
+        # a lone spike can't flip status by itself.
+        degraded_today = int(sum(1 for r in ratios if r >= degradation_threshold))
 
         # Check quality floors. A cell must have at least min_pairs_needed
         # real day-pairs to be trusted.
@@ -335,12 +356,14 @@ def analyze_selected_kpi(
             daily_ratios_strs.append(str([round(r, 2) for r in ratios]))
             min_pair_ratios.append(min_ratio)
             max_pair_ratios.append(max_ratio)
+            degraded_day_counts.append(degraded_today)
         else:
             paired_degradations.append(mean_ratio)
             paired_counts.append(paired_count)
             daily_ratios_strs.append(str([round(r, 2) for r in ratios]))
             min_pair_ratios.append(min_ratio)
             max_pair_ratios.append(max_ratio)
+            degraded_day_counts.append(degraded_today)
 
     # Attach paired results as new columns
     comparison["paired_days_count"] = paired_counts
@@ -352,6 +375,11 @@ def analyze_selected_kpi(
                                                 index=comparison.index).round(2)
     comparison["confidence_score_%"] = (
         comparison["paired_days_count"] / expected_recent * 100).round(1)
+    # FIX (Flaw 2): day-level consistency audit columns.
+    comparison["degraded_days_count"] = degraded_day_counts
+    comparison["degraded_days_ratio_%"] = (
+        comparison["degraded_days_count"] /
+        comparison["paired_days_count"].replace(0, np.nan) * 100).round(1)
     comparison["_paired_degradation"] = paired_degradations
 
     # Drop the cells that failed the paired-days check
@@ -381,13 +409,22 @@ def analyze_selected_kpi(
         comparison["p_value"] = sig_df["p_value"].reindex(comparison.index)
         comparison["t_statistic"] = sig_df["t_statistic"].reindex(comparison.index)
 
+    # FIX (Flaw 2): consistency gate — require a real fraction of paired days
+    # to be individually degraded, so a single transient spike cannot flip a
+    # cell to "Degraded" on the strength of the mean alone.
+    consistent_mask = (
+        comparison["degraded_days_ratio_%"].fillna(0)
+        >= MIN_DEGRADED_DAY_FRACTION * 100)
+
     if enable_significance_test:
         comparison["kpi_status"] = np.where(
             (comparison["kpi_degradation_ratio_%"] >= degradation_threshold) &
-            (comparison.get("stat_significant", False) == True), "Degraded", "Normal")
+            (comparison.get("stat_significant", False) == True) &
+            consistent_mask, "Degraded", "Normal")
     else:
         comparison["kpi_status"] = np.where(
-            comparison["kpi_degradation_ratio_%"] >= degradation_threshold, "Degraded", "Normal")
+            (comparison["kpi_degradation_ratio_%"] >= degradation_threshold) &
+            consistent_mask, "Degraded", "Normal")
 
     comparison["selected_kpi_name"] = selected_kpi_name
     comparison["target_kpi_column"] = target_kpi
@@ -515,6 +552,7 @@ def analyze_selected_kpi(
         # --- NEW: paired comparison transparency columns ---
         "paired_days_count", "confidence_score_%",
         "min_pair_ratio_%", "max_pair_ratio_%", "daily_ratios",
+        "degraded_days_count", "degraded_days_ratio_%",
         # ----------------------------------------------------
         "kpi_degradation_ratio_%", "kpi_status", "stat_significant", "p_value",
         "main_cause_counter_or_kpi", "main_cause_recent_value", "main_cause_baseline_value",

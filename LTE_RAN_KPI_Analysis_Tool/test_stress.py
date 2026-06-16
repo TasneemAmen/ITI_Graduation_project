@@ -150,33 +150,52 @@ def test_audit_min_max_bracket_the_mean():
 # ===========================================================================
 # FLAW PROBES  (xfail = currently failing == documents a real weakness)
 # ===========================================================================
-@pytest.mark.xfail(strict=True, reason=(
-    "FLAW: a single valid-but-tiny baseline day creates a huge per-day ratio "
-    "that poisons the unweighted mean-of-ratios, flipping a clearly degraded "
-    "cell to undetected. Per-pair baseline values are not subject to the "
-    "min_baseline_value floor (only the baseline average is)."))
-def test_tiny_baseline_day_should_not_hide_real_degradation():
+def test_tiny_baseline_day_does_not_hide_real_degradation():
+    """FIXED (Flaw 1): a single valid-but-tiny baseline day used to create a
+    huge per-day ratio that poisoned the unweighted mean and flipped a clearly
+    degraded cell to undetected. Per-pair baselines below min_baseline_value
+    are now skipped, so the genuine degradation is still reported."""
     # 6 of 7 days clearly degraded (50->20 = 60%); one baseline day = 0.5 Mbps.
     df = build_frame([{"site": "S1",
                        "recent": [20] * 7,
                        "baseline": [50, 50, 50, 50, 50, 50, 0.5]}], DL)
-    out, _ = run(df, threshold=20.0)   # a robust method would still flag this
-    assert out.shape[0] == 1, "degraded cell was hidden by one tiny-baseline day"
+    out, _ = run(df, threshold=20.0)
+    r = one_row(out)
+    assert r["kpi_status"] == "Degraded"
+    # the tiny-baseline day was dropped, not used: 6 pairs, ~60% degradation
+    assert r["paired_days_count"] == 6
+    assert r["kpi_degradation_ratio_%"] == pytest.approx(60.0)
+    assert r["confidence_score_%"] < 100.0   # dropped pair stays visible
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "FLAW: a single transient one-day spike can drag the unweighted mean above "
-    "threshold even when 6/7 days are perfectly healthy. mean-of-ratios gives "
-    "every day equal weight regardless of traffic volume."))
-def test_single_day_spike_should_not_alone_trip_threshold():
-    # 6 days healthy (0%), 1 day catastrophic (50->5 = 90%). mean = ~12.9%.
-    # We assert a robust method keeps this Normal at a 20% threshold... but the
-    # current mean can be pushed around purely by one unweighted day.
+def test_single_day_spike_does_not_alone_trip_threshold():
+    """FIXED (Flaw 2): a lone transient spike used to drag the unweighted mean
+    over threshold even with 6/7 healthy days. A consistency gate now requires
+    at least half the paired days to be individually degraded, so one spike
+    stays Normal — while the spike is still visible in the audit columns."""
+    # 6 days healthy (0%), 1 day catastrophic (50->5 = 90%). mean ~12.9%.
     df = build_frame([{"site": "S1",
                        "recent": {0: 5, 1: 50, 2: 50, 3: 50, 4: 50, 5: 50, 6: 50},
                        "baseline": [50] * 7}], DL)
     out, _ = run(df, threshold=10.0)
     assert out.shape[0] == 0, "one transient spike alone tripped the threshold"
+
+
+def test_consistent_degradation_still_flagged_after_gate():
+    """The consistency gate must not suppress genuine, sustained degradation:
+    when most days are degraded the cell is still flagged."""
+    df = build_frame([{"site": "S1", "recent": [40] * 7, "baseline": [50] * 7}], DL)
+    out, _ = run(df, threshold=10.0)
+    r = one_row(out)
+    assert r["kpi_status"] == "Degraded"
+    assert r["degraded_days_ratio_%"] == pytest.approx(100.0)
+
+
+def test_new_audit_columns_present():
+    df = build_frame([{"site": "S1", "recent": [40] * 7, "baseline": [50] * 7}], DL)
+    r = one_row(run(df)[0])
+    assert "degraded_days_count" in r.index
+    assert "degraded_days_ratio_%" in r.index
 
 
 def test_daily_ratios_is_a_string_not_a_list():
@@ -215,7 +234,7 @@ def test_avg_columns_can_disagree_with_paired_degradation():
 # ===========================================================================
 def _verdict():
     print("=" * 72)
-    print("PAIRED-COMPARISON CHANGE — STRESS / RELIABILITY VERDICT")
+    print("PAIRED-COMPARISON CHANGE — STRESS / RELIABILITY VERDICT (post-fix)")
     print("=" * 72)
 
     # perf
@@ -228,44 +247,41 @@ def _verdict():
           f"The per-cell Python `iterrows` loop is the cost driver; fine at\n"
           f"  5k cells, but it grows linearly and will dominate at ~50k+.")
 
-    # flaw 1
+    # flaw 1 (fixed)
     df = build_frame([{"site": "S1", "recent": [20]*7,
-                       "baseline": [50,50,50,50,50,50,0.5]}], DL)
+                       "baseline": [50, 50, 50, 50, 50, 50, 0.5]}], DL)
     out, _ = run(df, threshold=20.0)
-    print(f"\nFLAW 1 — tiny-baseline poisoning  [HIGH severity]")
+    status = "DEGRADED (correct)" if out.shape[0] else "NORMAL (missed!)"
+    print(f"\nFLAW 1 — tiny-baseline poisoning  [FIXED]")
     print(f"  6/7 days are -60% degraded, 1 baseline day = 0.5 Mbps.")
-    print(f"  Result: cell reported as {'DEGRADED' if out.shape[0] else 'NORMAL (missed!)'}.")
-    print(f"  Cause: per-pair baselines bypass min_baseline_value; one tiny")
-    print(f"         denominator yields a ~-3900% ratio that sinks the mean.")
-    print(f"  Fix:   apply the per-KPI min_baseline_value floor (or a relative")
-    print(f"         clamp / median-of-ratios / winsorize) inside the pair loop.")
+    print(f"  Result: {status}")
+    print(f"  Fix:    per-pair baselines below min_baseline_value are skipped,")
+    print(f"          so a tiny denominator can no longer sink the mean. The")
+    print(f"          dropped pair shows up as confidence_score_% < 100.")
 
-    # flaw 2
+    # flaw 2 (fixed)
     df = build_frame([{"site": "S1",
-                       "recent": {0:5,1:50,2:50,3:50,4:50,5:50,6:50},
+                       "recent": {0: 5, 1: 50, 2: 50, 3: 50, 4: 50, 5: 50, 6: 50},
                        "baseline": [50]*7}], DL)
     out, _ = run(df, threshold=10.0)
-    print(f"\nFLAW 2 — equal-weight mean is outlier-sensitive  [MED severity]")
+    status = "DEGRADED (one day alone)" if out.shape[0] else "NORMAL (correct)"
+    print(f"\nFLAW 2 — equal-weight mean is outlier-sensitive  [FIXED]")
     print(f"  1 catastrophic day + 6 healthy days, threshold 10%.")
-    print(f"  Result: {'DEGRADED (one day alone)' if out.shape[0] else 'NORMAL'}.")
-    print(f"  Note:  min/max_pair_ratio_% audit columns DO expose the spike, so")
-    print(f"         a human can catch it — but the automated status can mislead.")
-    print(f"  Fix:   consider median-of-ratios or a 'consistent-days' rule")
-    print(f"         (e.g. require N days over threshold, not just the mean).")
+    print(f"  Result: {status}")
+    print(f"  Fix:    consistency gate — a cell is only Degraded when >= 50% of")
+    print(f"          paired days are individually over threshold. The spike is")
+    print(f"          still exposed via max_pair_ratio_% / degraded_days_ratio_%.")
 
-    print(f"\nDESIGN NOTES (not bugs)")
+    print(f"\nDESIGN NOTES (still true, low priority)")
     print(f"  * daily_ratios is a stringified list -> consumers must parse it.")
     print(f"  * recent_avg/baseline_avg (imputed, period means) won't always")
     print(f"    reconcile with kpi_degradation_ratio_% (observed, paired).")
 
     print(f"\nOVERALL")
-    print(f"  The core idea is sound and demonstrably better than the old")
-    print(f"  (mean-mean)/mean formula under day-of-week seasonality and partial")
-    print(f"  recent windows (see test_paired_comparison.py). Day-alignment,")
-    print(f"  scaled floors, custom fallback and audit columns all work.")
-    print(f"  ACCEPTABLE TO MERGE, but address FLAW 1 before trusting the")
-    print(f"  automated Degraded/Normal status on real (noisy) data — a single")
-    print(f"  low-traffic baseline day can hide a real outage.")
+    print(f"  Both reliability flaws are fixed and guarded by regression tests.")
+    print(f"  Day-alignment, scaled floors, custom fallback, audit columns, the")
+    print(f"  per-pair baseline floor and the consistency gate all hold. The")
+    print(f"  change is now SAFE TO MERGE for automated Degraded/Normal status.")
     print("=" * 72)
 
 
