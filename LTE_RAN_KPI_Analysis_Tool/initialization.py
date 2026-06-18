@@ -28,9 +28,9 @@ from main_function_for_selected_kpi import analyze_selected_kpi
 from combined_degraded_kpi import analyze_all_kpis
 from Visualization_Functions import show_dashboard, show_trend_dashboard
 from Generate_Word_Report import generate_word_report, DOCX_AVAILABLE
-from Save_Results import save_csv_results
+from Save_Results import save_csv_results, save_excel_results
 from Loading_file_inputs_outputs import browse_excel_file, get_save_path, get_save_directory
-
+from anomaly_detection import detect_kpi_anomalies_last_day
 
 class LTEKPIAnalyzerApp:
     """
@@ -74,11 +74,13 @@ class LTEKPIAnalyzerApp:
         # Output storage
         self.output_df = None
         self.original_df = None
+        self.clean_cells_df = None
         self.degraded_cell_ids = set()
         self.all_outputs = {}
         self.summary_df = None
         self.quarantine_df = None
         self.incomplete_df = None
+        self.anomalies_df = None
         self.analysis_mode = "single"
         
         # Running state
@@ -179,15 +181,18 @@ class LTEKPIAnalyzerApp:
         self.save_button = ttk.Button(settings_frame, text="Save CSV", command=self.save_csv)
         self.save_button.grid(row=2, column=6, padx=10, pady=5)
         
+        self.excel_button = ttk.Button(settings_frame, text="Export Excel", command=self.export_excel)
+        self.excel_button.grid(row=2, column=7, padx=10, pady=5)
+        
         self.dashboard_button = ttk.Button(settings_frame, text="Show Dashboard", command=self.show_dashboard)
-        self.dashboard_button.grid(row=2, column=7, padx=10, pady=5)
+        self.dashboard_button.grid(row=3, column=6, padx=10, pady=5)
         
         self.trend_button = ttk.Button(settings_frame, text="Trend Dashboard", command=self.show_trend)
-        self.trend_button.grid(row=2, column=8, padx=10, pady=5)
+        self.trend_button.grid(row=3, column=7, padx=10, pady=5)
         
         # Info label
         self.info_label = ttk.Label(settings_frame, text="")
-        self.info_label.grid(row=3, column=0, columnspan=6, sticky="w", padx=5, pady=5)
+        self.info_label.grid(row=3, column=0, columnspan=5, sticky="w", padx=5, pady=5)
         self.update_info_label()
         
         # Progress bar
@@ -274,7 +279,7 @@ class LTEKPIAnalyzerApp:
         """Actual running state update (must run in main thread)."""
         self.is_running = running
         state = "disabled" if running else "normal"
-        for btn in [self.run_button, self.run_all_button, self.save_button, 
+        for btn in [self.run_button, self.run_all_button, self.save_button, self.excel_button,
                     self.dashboard_button, self.trend_button, self.report_button]:
             btn.config(state=state)
     
@@ -379,11 +384,28 @@ class LTEKPIAnalyzerApp:
             self.incomplete_df = metadata.get("incomplete_df")
             self.analysis_mode = "single"
             
+            # Detect anomalies
+            self.log("Running anomaly detection...")
+            self.anomalies_df = detect_kpi_anomalies_last_day(
+                df=df,
+                output_path=None,      # save later through Save_Results
+                lookback_weeks=4,
+                log_callback=self.log,
+            )
+            self.log(f"Anomalies found: {len(self.anomalies_df)}")
+            
             # Store degraded cell IDs
             self.degraded_cell_ids = set()
             if not output_df.empty and SITE_COL in output_df.columns and CELL_COL in output_df.columns:
                 for _, row in output_df.iterrows():
                     self.degraded_cell_ids.add((row.get(SITE_COL, ''), row.get(CELL_COL, '')))
+            
+            # Create clean cells DataFrame (original data without degraded cells)
+            if self.degraded_cell_ids and SITE_COL in self.original_df.columns and CELL_COL in self.original_df.columns:
+                mask = self.original_df.set_index([SITE_COL, CELL_COL]).index.isin(self.degraded_cell_ids)
+                self.clean_cells_df = self.original_df[~mask].copy()
+            else:
+                self.clean_cells_df = self.original_df.copy() if self.original_df is not None else None
             
             self.update_progress(80, "Preparing results...")
             
@@ -445,6 +467,22 @@ class LTEKPIAnalyzerApp:
             self.summary_df = summary_df
             self.quarantine_df = quarantine_df
             self.incomplete_df = incomplete_df
+            # ============================================
+            # Detect anomalies
+            # ============================================
+            self.log("Running anomaly detection...")
+
+            self.anomalies_df = detect_kpi_anomalies_last_day(
+                df=df,
+                output_path=None,      # save later through Save_Results
+                lookback_weeks=4,
+                log_callback=self.log,
+            )
+
+            self.log(
+                f"Anomalies found: {len(self.anomalies_df)}"
+            )
+
             self.analysis_mode = "all"
             
             # Store degraded cell IDs
@@ -452,6 +490,13 @@ class LTEKPIAnalyzerApp:
             if not combined.empty and SITE_COL in combined.columns and CELL_COL in combined.columns:
                 for _, row in combined.iterrows():
                     self.degraded_cell_ids.add((row.get(SITE_COL, ''), row.get(CELL_COL, '')))
+            
+            # Create clean cells DataFrame (original data without degraded cells)
+            if self.degraded_cell_ids and SITE_COL in df.columns and CELL_COL in df.columns:
+                mask = df.set_index([SITE_COL, CELL_COL]).index.isin(self.degraded_cell_ids)
+                self.clean_cells_df = df[~mask].copy()
+            else:
+                self.clean_cells_df = df.copy()
             
             self.update_progress(92, "Updating table...")
             self.root.after(0, lambda: self.update_table(summary_df))
@@ -535,6 +580,7 @@ class LTEKPIAnalyzerApp:
                 self.output_df, self.all_outputs, self.summary_df,
                 self.analysis_mode, self.selected_kpi.get(), save_dir, self.log,
                 quarantine_df=self.quarantine_df, incomplete_df=self.incomplete_df,
+                anomalies_df=self.anomalies_df, clean_cells_df=self.clean_cells_df,
             )
             if success:
                 messagebox.showinfo("Saved", f"CSV files saved to:\n{save_dir}")
@@ -548,6 +594,39 @@ class LTEKPIAnalyzerApp:
                     self.output_df, self.all_outputs, self.summary_df,
                     self.analysis_mode, self.selected_kpi.get(), save_path, self.log,
                     quarantine_df=self.quarantine_df, incomplete_df=self.incomplete_df,
+                    anomalies_df=self.anomalies_df, clean_cells_df=self.clean_cells_df,
                 )
                 if success:
                     messagebox.showinfo("Saved", f"CSV saved:\n{save_path}")
+    
+    def export_excel(self):
+        """Export analysis results to Excel workbook."""
+        if self.output_df is None and self.summary_df is None:
+            messagebox.showwarning("No output", "Run analysis first.")
+            return
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        if self.analysis_mode == "all":
+            default_name = f"LTE_KPI_Analysis_{timestamp}.xlsx"
+        else:
+            prefix = KPI_CONFIGS[self.selected_kpi.get()]["output_prefix"]
+            default_name = f"{prefix}_analysis_{timestamp}.xlsx"
+        
+        save_path = get_save_path(default_name, "Excel files", ".xlsx")
+        
+        if not save_path:
+            return
+        
+        success = save_excel_results(
+            self.output_df, self.summary_df, self.analysis_mode,
+            self.selected_kpi.get(), save_path, self.log,
+            anomalies_df=self.anomalies_df,
+            quarantine_df=self.quarantine_df,
+            incomplete_df=self.incomplete_df,
+            clean_cells_df=self.clean_cells_df,
+        )
+        
+        if success:
+            messagebox.showinfo("Exported", f"Excel report exported:\n{save_path}")
+

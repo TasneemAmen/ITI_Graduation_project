@@ -10,8 +10,11 @@
 #      missing days with the median of the same weekday over the previous N
 #      weeks. Recent window is never imputed (that could hide a real outage).
 #   3. compute_baseline_fallback_from_history(): for cells with zero/NaN
-#      baseline average, use median of same weekday from N weeks ago.
-# Both return tidy frames so the pipeline stays auditable.
+#      baseline average, use SAME-WEEKDAY per-weekday medians (NOT pooled
+#      across all weekdays) from the previous N weeks. This preserves the
+#      weekly seasonality pattern (weekends stay low, weekdays stay high)
+#      and is robust to outliers within each weekday group.
+# All return tidy frames so the pipeline stays auditable.
 # ============================================================
 
 import numpy as np
@@ -151,6 +154,14 @@ def compute_baseline_imputed(
 # ------------------------------------------------------------
 # 3. Baseline fallback from historical data (for zero/NaN baselines)
 # ------------------------------------------------------------
+# Uses SAME-WEEKDAY matching (consistent with main degradation analysis
+# and the anomaly_detection module):
+#   - For each baseline day, look at the same weekday from previous N weeks
+#   - Compute per-weekday MEDIAN values (robust to outliers)
+#   - Average the per-weekday medians to get the final fallback value
+# This avoids the previous bug of pooling all weekdays together, which
+# pulled the median toward low-traffic weekend days.
+# ------------------------------------------------------------
 def compute_baseline_fallback_from_history(
     df,
     target_kpi,
@@ -163,80 +174,128 @@ def compute_baseline_fallback_from_history(
 ):
     """
     Compute fallback baseline values for cells with zero/NaN baseline average.
-    
-    Uses the median of the same weekday from N weeks ago (default: 5 weeks).
-    This provides a more accurate baseline than a static min_baseline_value.
-    
+
+    Uses SAME-WEEKDAY per-weekday medians (not pooled across all weekdays):
+      1. For each baseline day, find same-weekday values from previous N weeks
+      2. Take the median of each weekday's historical values
+      3. Average the per-weekday medians across all baseline days
+    This preserves the weekly seasonality pattern (e.g., weekends stay low,
+    weekdays stay high) instead of pulling everything toward the pooled median.
+
     Edge cases handled:
-    - If no data from exact week, tries previous weeks (cascading fallback)
-    - If no historical data at all, returns NaN (caller should use min_baseline_value)
-    - Uses median to be robust against outliers
-    
+      - If no historical data for any weekday → returns NaN (caller uses min_baseline_value)
+      - If only some weekdays have history → uses medians from available weekdays
+      - Uses median per weekday (robust to outliers within each weekday group)
+
     Args:
-        df: Full DataFrame with all historical data
-        target_kpi: Column name of the KPI
-        cell_cols: List of columns identifying a cell
-        date_col: Name of date column
-        baseline_start: Start date of baseline period
-        baseline_end: End date of baseline period
-        lookback_weeks: How many weeks back to look (default 5)
-        min_samples: Minimum samples needed for valid median (default 1)
-        
+        df: Full DataFrame with all historical data.
+        target_kpi: Column name of the KPI.
+        cell_cols: List of columns identifying a cell.
+        date_col: Name of date column.
+        baseline_start: Start date of baseline period.
+        baseline_end: End date of baseline period.
+        lookback_weeks: How many weeks back to look per weekday (default 5).
+        min_samples: Minimum samples needed per weekday for a valid median
+                     (default 1).
+
     Returns:
-        DataFrame with columns: cell_cols + ['baseline_fallback', 'fallback_weeks_back', 'fallback_samples']
+        DataFrame with columns:
+            cell_cols + ['baseline_fallback', 'fallback_weeks_back', 'fallback_samples']
+        - baseline_fallback: average of per-weekday medians (NaN if no history)
+        - fallback_weeks_back: how many weeks were looked back
+        - fallback_samples: total number of valid samples used across all weekdays
     """
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
-    
+
     baseline_dates = pd.date_range(baseline_start, baseline_end, freq='D')
-    
-    # Collect all lookback dates (same weekdays from previous weeks)
-    all_lookback_dates = []
+
+    # Group baseline days by weekday (0=Monday, 6=Sunday)
+    weekday_to_dates = {}
     for d in baseline_dates:
-        for week in range(1, lookback_weeks + 1):
-            lookback_date = d - pd.Timedelta(days=7 * week)
-            all_lookback_dates.append(lookback_date)
-    
-    all_lookback_dates = pd.to_datetime(all_lookback_dates).unique()
-    
-    # Filter to available dates in data
-    df_hist = df[df[date_col].isin(all_lookback_dates)].copy()
-    
-    if df_hist.empty:
-        # No historical data available
-        result = pd.DataFrame(columns=cell_cols + ['baseline_fallback', 'fallback_weeks_back', 'fallback_samples'])
+        wd = d.weekday()
+        if wd not in weekday_to_dates:
+            weekday_to_dates[wd] = []
+        weekday_to_dates[wd].append(d)
+
+    # For each weekday, collect same-weekday lookback dates
+    weekday_lookback_dates = {}  # weekday -> list of dates
+    for wd, dates in weekday_to_dates.items():
+        lookback_set = set()
+        for d in dates:
+            for week in range(1, lookback_weeks + 1):
+                lookback_set.add(d - pd.Timedelta(days=7 * week))
+        weekday_lookback_dates[wd] = sorted(lookback_set)
+
+    # Build the full set of lookback dates (all weekdays combined)
+    all_lookback_dates = set()
+    for dates in weekday_lookback_dates.values():
+        all_lookback_dates.update(dates)
+    all_lookback_dates = sorted(all_lookback_dates)
+
+    if not all_lookback_dates:
+        result = pd.DataFrame(
+            columns=list(cell_cols) + ['baseline_fallback', 'fallback_weeks_back', 'fallback_samples']
+        )
         return result
-    
-    # Get the target KPI values from historical data
+
+    # Filter to rows whose date is in the lookback set
+    df_hist = df[df[date_col].isin(all_lookback_dates)].copy()
+
+    if df_hist.empty:
+        result = pd.DataFrame(
+            columns=list(cell_cols) + ['baseline_fallback', 'fallback_weeks_back', 'fallback_samples']
+        )
+        return result
+
+    # Coerce target KPI to numeric
     df_hist[target_kpi] = pd.to_numeric(df_hist[target_kpi], errors='coerce')
-    
-    # For each cell, calculate median of same-weekday values
-    # Also track which weeks contributed and sample count
+
+    # For each cell, compute per-weekday medians then average them
     result_list = []
-    
+
     for cell_key, cell_df in df_hist.groupby(list(cell_cols)):
-        values = cell_df[target_kpi].dropna()
-        
-        if len(values) >= min_samples:
-            median_val = values.median()
-            weeks_back = lookback_weeks  # How many weeks we looked back
-            sample_count = len(values)
+        # Group this cell's historical data by weekday
+        cell_df = cell_df.copy()
+        cell_df['_weekday'] = cell_df[date_col].dt.weekday
+
+        weekday_medians = []
+        total_samples = 0
+        weekdays_with_data = 0
+
+        for wd, lookback_dates in weekday_lookback_dates.items():
+            # Get this cell's values for this weekday's lookback dates
+            wd_data = cell_df[
+                cell_df['_weekday'] == wd
+            ][target_kpi].dropna()
+
+            if len(wd_data) >= min_samples:
+                wd_median = float(wd_data.median())
+                weekday_medians.append(wd_median)
+                total_samples += len(wd_data)
+                weekdays_with_data += 1
+
+        if weekday_medians:
+            # Average the per-weekday medians (preserves seasonality pattern)
+            fallback_value = float(np.mean(weekday_medians))
+            sample_count = total_samples
         else:
-            median_val = np.nan
-            weeks_back = 0
+            fallback_value = np.nan
             sample_count = 0
-        
+
         row = dict(zip(cell_cols, cell_key))
-        row['baseline_fallback'] = median_val
-        row['fallback_weeks_back'] = weeks_back
+        row['baseline_fallback'] = fallback_value
+        row['fallback_weeks_back'] = lookback_weeks
         row['fallback_samples'] = sample_count
         result_list.append(row)
-    
+
     if result_list:
         result_df = pd.DataFrame(result_list)
     else:
-        result_df = pd.DataFrame(columns=list(cell_cols) + ['baseline_fallback', 'fallback_weeks_back', 'fallback_samples'])
-    
+        result_df = pd.DataFrame(
+            columns=list(cell_cols) + ['baseline_fallback', 'fallback_weeks_back', 'fallback_samples']
+        )
+
     return result_df
 
 

@@ -3,6 +3,10 @@
 # ============================================================
 # This file contains functions for analyzing all KPIs combined
 # and removing degraded cells from the dataset for clean dashboard views.
+#
+# The per-KPI degradation is computed in main_function_for_selected_kpi.py
+# using the MEDIAN of per-day degradations (robust to spike days) and
+# SAME-WEEKDAY historical baseline fallback (per-weekday medians, not pooled).
 # ============================================================
 
 import pandas as pd

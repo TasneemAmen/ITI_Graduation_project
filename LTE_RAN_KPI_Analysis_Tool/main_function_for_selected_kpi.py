@@ -7,9 +7,11 @@
 #   * baseline gaps are imputed from the same-weekday median over 4 weeks
 #     (recent window is NOT imputed);
 #   * cells with zero/NaN baseline get fallback from historical data
-#     (same weekday from N weeks ago) or min_baseline_value as last resort;
+#     (SAME-WEEKDAY per-weekday medians from N weeks ago — NOT pooled)
+#     or min_baseline_value as last resort;
 #   * DAY-BY-DAY COMPARISON: Each day in recent period is compared with its
-#     corresponding day in baseline period, then degradations are averaged;
+#     corresponding day in baseline period, then the MEDIAN of per-day
+#     degradations is used (robust to spike days);
 #   * cells with incomplete/insufficient data are recorded in
 #     metadata["incomplete_df"] instead of being silently dropped.
 # Output columns include new "baseline_fallback_*" columns for transparency.
@@ -67,7 +69,7 @@ def compute_day_by_day_degradation(
     Instead of comparing period averages, this function:
     1. Matches each day in recent period with corresponding day in baseline
     2. Calculates degradation for each day pair
-    3. Averages the degradations across all days
+    3. Uses the MEDIAN of per-day degradations (robust to spike days)
     
     For "last_week" mode: Day 1 recent vs Day 1 baseline (same weekday)
     For "4week_rolling_avg" mode: Each recent day vs same weekday average from 4 weeks
@@ -76,7 +78,7 @@ def compute_day_by_day_degradation(
         - cell_cols
         - recent_avg_kpi (average of recent daily values)
         - baseline_avg_kpi (average of baseline daily values)
-        - kpi_degradation_ratio_% (average of per-day degradations)
+        - kpi_degradation_ratio_% (MEDIAN of per-day degradations — robust to spikes)
         - day_by_day_degradations (list of per-day degradation values)
         - days_compared (number of day pairs compared)
     """
@@ -180,10 +182,14 @@ def compute_day_by_day_degradation(
         result_row = dict(zip(cell_cols, [cell_row[c] for c in cell_cols]))
         result_row['recent_avg_kpi'] = np.mean(recent_values) if recent_values else np.nan
         result_row['baseline_avg_kpi'] = np.mean(baseline_values) if baseline_values else np.nan
+        # MEDIAN (not mean) of per-day degradations — robust to spike days.
+        # A single spike day (e.g., special event, counter glitch) would
+        # drastically skew the mean; the median reflects the TYPICAL day's
+        # degradation and is not pulled around by outliers.
         # If no day_degradations were computed (e.g., all baselines were zero),
         # kpi_degradation_ratio_% stays NaN. The fallback + recompute step
         # in the caller will fill this in if a historical baseline is found.
-        result_row['kpi_degradation_ratio_%'] = np.mean(day_degradations) if day_degradations else np.nan
+        result_row['kpi_degradation_ratio_%'] = np.median(day_degradations) if day_degradations else np.nan
         result_row['day_by_day_degradations'] = day_degradations
         result_row['days_compared'] = len(day_degradations)
         result_row['recent_days_count'] = len(recent_values)
@@ -564,17 +570,12 @@ def analyze_selected_kpi(
     metadata["quarantine_df"] = pd.concat(quarantine_frames, ignore_index=True) if quarantine_frames else _empty_quarantine()
 
     final_cols = CELL_ID_COLS + [
-        "selected_kpi_name", "target_kpi_column", "kpi_category", "kpi_bad_direction",
-        "selected_threshold_%", "recent_period", "baseline_period", "baseline_mode",
-        "recent_avg_kpi", "baseline_avg_kpi",
-        "days_compared", "day_by_day_degradations",
-        "recent_days_count", "baseline_days_count",
-        "baseline_fallback_used", "baseline_fallback_source", "baseline_fallback_value",
-        "kpi_degradation_ratio_%", "kpi_status", "stat_significant", "p_value",
-        "main_cause_counter_or_kpi", "main_cause_recent_value", "main_cause_baseline_value",
-        "main_cause_change_%", "main_root_cause_category", "main_degradation_reason",
-        "main_recommended_action", "number_of_detected_causes", "multi_cause_flag",
-        "all_detected_causes", "all_cause_categories", "all_recommended_actions",
+        "selected_kpi_name", "target_kpi_column", "kpi_category",
+        "selected_threshold_%", "recent_period", "baseline_period",
+        "recent_avg_kpi", "baseline_avg_kpi", 
+        "kpi_degradation_ratio_%",
+        "number_of_detected_causes",
+        "all_detected_causes","main_cause_counter_or_kpi","main_degradation_reason","main_recommended_action","all_recommended_actions"
     ]
     available_final_cols = [c for c in final_cols if c in degraded_with_causes.columns]
     return degraded_with_causes[available_final_cols].copy(), metadata

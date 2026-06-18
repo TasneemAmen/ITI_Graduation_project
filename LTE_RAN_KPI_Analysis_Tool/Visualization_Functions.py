@@ -504,6 +504,14 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         ax.plot(x, daily_before['Average'].values, 'b-o', linewidth=2, markersize=6, label='Before (All Cells)')
         ax.plot(x, daily_after['Average'].values, 'g-s', linewidth=2, markersize=6, label='After (Clean Cells)')
         
+        # Calculate enhancement ratio
+        before_avg = daily_before['Average'].mean()
+        after_avg = daily_after['Average'].mean()
+        if before_avg != 0:
+            enhancement_ratio = ((before_avg - after_avg) / before_avg) * 100
+        else:
+            enhancement_ratio = 0
+        
         if degraded_cell_ids:
             diff = daily_before['Average'].values - daily_after['Average'].values
             ax.fill_between(x, daily_before['Average'].values, daily_after['Average'].values,
@@ -513,7 +521,7 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
         ax.set_xlabel('Date')
         ax.set_ylabel(col[:40])
-        ax.set_title(f'{col[:40]} - Daily Trend')
+        ax.set_title(f'{col[:40]} - Daily Trend (Enhancement: {enhancement_ratio:.2f}%)')
         ax.legend()
         ax.grid(True, alpha=0.3)
         
