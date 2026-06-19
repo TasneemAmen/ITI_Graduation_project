@@ -15,6 +15,13 @@ from KPI_Configuration import KPI_CONFIGS, CELL_ID_COLS, SITE_COL, CELL_COL, DAT
 from main_function_for_selected_kpi import analyze_selected_kpi
 
 
+def date_first(df):
+    """Return a view/copy with Date as the first column when present."""
+    if df is None or DATE_COL not in df.columns:
+        return df
+    return df[[DATE_COL] + [col for col in df.columns if col != DATE_COL]]
+
+
 def analyze_all_kpis(
     df,
     num_days,
@@ -581,14 +588,14 @@ def export_clean_sheet_to_excel(
     if include_summary:
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
             # Clean data sheet
-            clean_sheet.to_excel(writer, sheet_name='Clean_Data', index=False)
+            date_first(clean_sheet).to_excel(writer, sheet_name='Clean_Data', index=False)
             
             # Degraded cells list
-            result["degraded_cells_list"].to_excel(writer, sheet_name='Degraded_Cells', index=False)
+            date_first(result["degraded_cells_list"]).to_excel(writer, sheet_name='Degraded_Cells', index=False)
             
             # Summary sheet
             summary_df = pd.DataFrame([summary])
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            date_first(summary_df).to_excel(writer, sheet_name='Summary', index=False)
             
             # Degraded per KPI
             degraded_per_kpi = result["analysis_results"]["degraded_per_kpi"]
@@ -596,9 +603,9 @@ def export_clean_sheet_to_excel(
                 {"KPI": kpi, "Degraded_Cells": count}
                 for kpi, count in degraded_per_kpi.items()
             ])
-            kpi_summary.to_excel(writer, sheet_name='Degraded_Per_KPI', index=False)
+            date_first(kpi_summary).to_excel(writer, sheet_name='Degraded_Per_KPI', index=False)
     else:
-        clean_sheet.to_excel(output_path, index=False)
+        date_first(clean_sheet).to_excel(output_path, index=False)
     
     log_msg(f"Clean sheet exported to: {output_path}")
     

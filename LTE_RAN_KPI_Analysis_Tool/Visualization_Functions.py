@@ -23,7 +23,7 @@ from KPI_Configuration import (
     CELL_ID_COLS,
     KPI_CONFIGS,
 )
-from clean_excel_and_helpers import find_matching_column
+from clean_excel_and_helpers import clean_numeric_series, find_matching_column
 
 
 # ============================================================
@@ -186,6 +186,18 @@ def get_kpi_target_column(kpi_short_name):
         if kpi["short_name"] == kpi_short_name:
             return kpi["target_column"]
     return None
+
+
+def get_kpi_bad_direction(target_column, selected_kpi=None):
+    """
+    Get the degradation direction for a KPI target column.
+    """
+    for kpi in KPI_LIST:
+        if kpi["target_column"] == target_column:
+            return kpi["bad_direction"]
+
+    config = KPI_CONFIGS.get(selected_kpi, {}) if selected_kpi else {}
+    return config.get("bad_direction", "low")
 
 
 def get_kpi_threshold(kpi_short_name):
@@ -394,7 +406,7 @@ def show_dashboard(parent_window, output_df, summary_df, analysis_mode, selected
     canvas2.get_tk_widget().pack(fill="both", expand=True)
 
 
-def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_ids, selected_kpi, log_callback=None):
+def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_ids, selected_kpi, baseline_mode="last_week", log_callback=None):
     """
     Show the trend analysis dashboard window.
     
@@ -404,6 +416,7 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         output_df: Output DataFrame with degraded cells
         degraded_cell_ids: Set of degraded cell IDs
         selected_kpi: Currently selected KPI name
+        baseline_mode: Baseline mode used for enhancement comparison
         log_callback: Optional logging callback
     """
     if original_df is None:
@@ -449,7 +462,7 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
     config = KPI_CONFIGS.get(selected_kpi, {})
     target_kpi = config.get("target_kpi", "")
     kpi_col = find_matching_column(original_df, target_kpi)
-    
+
     trend_kpi = tk.StringVar(value=kpi_col if kpi_col else (kpi_target_cols[0] if kpi_target_cols else ""))
     
     # Create dropdown with only 13 KPIs
@@ -476,6 +489,7 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         
         df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors='coerce')
         df = df.dropna(subset=[DATE_COL])
+        df[col] = clean_numeric_series(df[col])
         
         # Before: all cells
         daily_before = df.groupby(DATE_COL)[col].mean().reset_index()
@@ -494,6 +508,35 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
             ttk.Label(chart_frame, text="No data to plot").pack()
             return
         
+        last_day = daily_before['Date'].max()
+        last_day_avg = daily_before.loc[daily_before['Date'] == last_day, 'Average'].mean()
+        
+        baseline_label = ""
+        baseline_avg = np.nan
+        if baseline_mode == "last_week":
+            baseline_day = last_day - pd.Timedelta(days=7)
+            baseline_vals = daily_before.loc[daily_before['Date'] == baseline_day, 'Average']
+            if not baseline_vals.empty:
+                baseline_avg = baseline_vals.mean()
+            baseline_label = "Same weekday last week only"
+        else:
+            lookback_dates = [last_day - pd.Timedelta(days=7 * week) for week in range(1, 5)]
+            baseline_vals = [daily_before.loc[daily_before['Date'] == d, 'Average'].mean()
+                             for d in lookback_dates
+                             if not daily_before.loc[daily_before['Date'] == d, 'Average'].empty]
+            if baseline_vals:
+                baseline_avg = float(np.median(baseline_vals))
+            baseline_label = "Same weekday over last 4 weeks"
+        
+        bad_direction = get_kpi_bad_direction(col, selected_kpi)
+        if pd.notna(baseline_avg) and abs(baseline_avg) > 1e-10:
+            if bad_direction == "high":
+                enhancement_ratio = abs((baseline_avg - last_day_avg) / baseline_avg) * 100
+            else:
+                enhancement_ratio = abs((last_day_avg - baseline_avg) / baseline_avg) * 100
+        else:
+            enhancement_ratio = 0
+        
         fig = Figure(figsize=(12, 5), dpi=100)
         ax = fig.add_subplot(111)
         
@@ -504,14 +547,6 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         ax.plot(x, daily_before['Average'].values, 'b-o', linewidth=2, markersize=6, label='Before (All Cells)')
         ax.plot(x, daily_after['Average'].values, 'g-s', linewidth=2, markersize=6, label='After (Clean Cells)')
         
-        # Calculate enhancement ratio
-        before_avg = daily_before['Average'].mean()
-        after_avg = daily_after['Average'].mean()
-        if before_avg != 0:
-            enhancement_ratio = ((before_avg - after_avg) / before_avg) * 100
-        else:
-            enhancement_ratio = 0
-        
         if degraded_cell_ids:
             diff = daily_before['Average'].values - daily_after['Average'].values
             ax.fill_between(x, daily_before['Average'].values, daily_after['Average'].values,
@@ -521,7 +556,10 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
         ax.set_xlabel('Date')
         ax.set_ylabel(col[:40])
-        ax.set_title(f'{col[:40]} - Daily Trend (Enhancement: {enhancement_ratio:.2f}%)')
+        ax.set_title(
+            f'{col[:40]} - Daily Trend (Last day vs {baseline_label}, ' \
+            f'Enhancement: {enhancement_ratio:.2f}%)'
+        )
         ax.legend()
         ax.grid(True, alpha=0.3)
         

@@ -6,11 +6,55 @@
 
 import os
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils.dataframe import dataframe_to_rows
 
-from KPI_Configuration import KPI_CONFIGS
+from KPI_Configuration import CELL_ID_COLS, DATE_COL
+
+
+def date_first(df):
+    """Return a view/copy with Date as the first column when present."""
+    if df is None or DATE_COL not in df.columns:
+        return df
+    return df[[DATE_COL] + [col for col in df.columns if col != DATE_COL]]
+
+
+def combine_not_calculated_cells(quarantine_df=None, incomplete_df=None):
+    """Combine rows excluded from calculation into one output table."""
+    excluded = []
+
+    if quarantine_df is not None and not quarantine_df.empty:
+        q_df = quarantine_df.copy()
+        q_df.insert(0, "Exclusion_Type", "Invalid counter value")
+        excluded.append(q_df)
+
+    if incomplete_df is not None and not incomplete_df.empty:
+        i_df = incomplete_df.copy()
+        i_df.insert(0, "Exclusion_Type", "Missing or insufficient data")
+        excluded.append(i_df)
+
+    if not excluded:
+        return pd.DataFrame(columns=["Exclusion_Type"])
+
+    return pd.concat(excluded, ignore_index=True, sort=False)
+
+
+def remove_anomaly_cells(clean_cells_df=None, anomalies_df=None):
+    """Remove cells with anomalies from the clean normal-cell output."""
+    if clean_cells_df is None or clean_cells_df.empty:
+        return pd.DataFrame() if clean_cells_df is None else clean_cells_df
+    if anomalies_df is None or anomalies_df.empty:
+        return clean_cells_df
+
+    id_cols = [
+        col for col in CELL_ID_COLS
+        if col in clean_cells_df.columns and col in anomalies_df.columns
+    ]
+    if not id_cols:
+        return clean_cells_df
+
+    anomaly_ids = anomalies_df[id_cols].drop_duplicates()
+    clean_index = pd.MultiIndex.from_frame(clean_cells_df[id_cols])
+    anomaly_index = pd.MultiIndex.from_frame(anomaly_ids)
+    return clean_cells_df[~clean_index.isin(anomaly_index)].copy()
 
 
 def save_csv_results(
@@ -31,13 +75,13 @@ def save_csv_results(
     
     Args:
         output_df: Output DataFrame with degraded cells
-        all_outputs: Dictionary of KPI name -> DataFrame (for all KPIs mode)
+        all_outputs: Kept for compatibility; per-KPI files are not exported
         summary_df: Summary DataFrame
         analysis_mode: "single" or "all"
         selected_kpi: Currently selected KPI name
         save_path_or_dir: File path (single mode) or directory path (all mode)
         log_callback: Optional logging callback
-        clean_cells_df: Original data without degraded cells
+        clean_cells_df: Original data without degraded or anomaly cells
         
     Returns:
         True if successful, False otherwise
@@ -57,80 +101,26 @@ def save_csv_results(
         if not save_dir:
             return False
         
-        saved = 0
-        for kpi_name, kpi_df in all_outputs.items():
-            if kpi_df is not None and not kpi_df.empty:
-                prefix = KPI_CONFIGS[kpi_name]["output_prefix"]
-                path = os.path.join(save_dir, f"{prefix}_degraded.csv")
-                kpi_df.to_csv(path, index=False, encoding="utf-8-sig")
-                saved += 1
-        
-        if output_df is not None and not output_df.empty:
-            output_df.to_csv(os.path.join(save_dir, "all_kpis_combined.csv"), index=False, encoding="utf-8-sig")
-            saved += 1
-        
-        if summary_df is not None and not summary_df.empty:
-            summary_df.to_csv(os.path.join(save_dir, "summary_report.csv"), index=False, encoding="utf-8-sig")
-            saved += 1
+        degraded_out = output_df if output_df is not None else pd.DataFrame()
+        anomalies_out = anomalies_df if anomalies_df is not None else pd.DataFrame()
+        clean_out = remove_anomaly_cells(clean_cells_df, anomalies_df)
+        excluded_out = combine_not_calculated_cells(quarantine_df, incomplete_df)
 
-        if anomalies_df is not None and not anomalies_df.empty:
-            anomalies_df.to_csv(
-                os.path.join(save_dir, "anomalies_all.csv"),
+        outputs = [
+            ("all_degraded_cells.csv", degraded_out),
+            ("all_anomalies.csv", anomalies_out),
+            ("clean_normal_cells.csv", clean_out),
+            ("cells_not_calculated.csv", excluded_out),
+        ]
+
+        for filename, df in outputs:
+            date_first(df).to_csv(
+                os.path.join(save_dir, filename),
                 index=False,
                 encoding="utf-8-sig"
             )
-            saved += 1
 
-            zero_df = anomalies_df[anomalies_df["Anomaly_Type"] == "Zero"]
-            if not zero_df.empty:
-                zero_df.to_csv(
-                    os.path.join(save_dir, "anomalies_zero.csv"),
-                    index=False,
-                    encoding="utf-8-sig"
-                )
-                saved += 1
-
-            spike_df = anomalies_df[anomalies_df["Anomaly_Type"] == "Spike"]
-            if not spike_df.empty:
-                spike_df.to_csv(
-                    os.path.join(save_dir, "anomalies_spike.csv"),
-                    index=False,
-                    encoding="utf-8-sig"
-                )
-                saved += 1
-
-            summary_rows = [{
-                "Total_Anomalies": len(anomalies_df),
-                "Zero_Anomalies": int((anomalies_df["Anomaly_Type"] == "Zero").sum()),
-                "Spike_Anomalies": int((anomalies_df["Anomaly_Type"] == "Spike").sum()),
-                "Critical": int((anomalies_df["Severity"] == "Critical").sum()),
-                "High": int((anomalies_df["Severity"] == "High").sum()),
-                "Medium": int((anomalies_df["Severity"] == "Medium").sum()),
-                "Low": int((anomalies_df["Severity"] == "Low").sum())
-            }]
-
-            pd.DataFrame(summary_rows).to_csv(
-                os.path.join(save_dir, "anomalies_summary.csv"),
-                index=False,
-                encoding="utf-8-sig"
-            )
-            saved += 1
-
-        if clean_cells_df is not None and not clean_cells_df.empty:
-            clean_cells_df.to_csv(os.path.join(save_dir, "clean_cells_original_data.csv"), index=False, encoding="utf-8-sig")
-            saved += 1
-            log_msg(f"Clean cells: {clean_cells_df.shape[0]} normal cell records (original data without degraded)")
-
-        if quarantine_df is not None and not quarantine_df.empty:
-            quarantine_df.to_csv(os.path.join(save_dir, "data_quality_quarantine.csv"), index=False, encoding="utf-8-sig")
-            saved += 1
-            log_msg(f"Quarantine: {quarantine_df.shape[0]} invalid counter value(s) flagged")
-        if incomplete_df is not None and not incomplete_df.empty:
-            incomplete_df.to_csv(os.path.join(save_dir, "data_quality_incomplete_cells.csv"), index=False, encoding="utf-8-sig")
-            saved += 1
-            log_msg(f"Incomplete: {incomplete_df.shape[0]} cell-row(s) with missing/insufficient data")
-        
-        log_msg(f"Saved {saved} files to: {save_dir}")
+        log_msg(f"Saved 4 files to: {save_dir}")
         return True
     
     # Single KPI mode
@@ -138,20 +128,9 @@ def save_csv_results(
         log_msg("ERROR: No degraded cells to save")
         return False
     
-    prefix = KPI_CONFIGS[selected_kpi]["output_prefix"]
-    
-    output_df.to_csv(save_path_or_dir, index=False, encoding="utf-8-sig")
+    date_first(output_df).to_csv(save_path_or_dir, index=False, encoding="utf-8-sig")
     log_msg(f"CSV saved: {save_path_or_dir}")
 
-    out_dir = os.path.dirname(os.path.abspath(save_path_or_dir))
-    if quarantine_df is not None and not quarantine_df.empty:
-        qp = os.path.join(out_dir, f"{prefix}_counter_quarantine.csv")
-        quarantine_df.to_csv(qp, index=False, encoding="utf-8-sig")
-        log_msg(f"Quarantine CSV saved: {qp} ({quarantine_df.shape[0]} rows)")
-    if incomplete_df is not None and not incomplete_df.empty:
-        ip = os.path.join(out_dir, f"{prefix}_incomplete_cells.csv")
-        incomplete_df.to_csv(ip, index=False, encoding="utf-8-sig")
-        log_msg(f"Incomplete-cells CSV saved: {ip} ({incomplete_df.shape[0]} rows)")
     return True
 
 
@@ -168,14 +147,13 @@ def save_excel_results(
     clean_cells_df=None,
 ):
     """
-    Save analysis results to an Excel workbook with multiple sheets.
+    Save analysis results to an Excel workbook with four sheets.
     
     Sheets created:
-    1. Combined Degraded - All degraded cells (all KPIs combined)
-    2. Clean Cells - Original data without degraded cells
-    3. Anomalies - All detected anomalies
-    4. Summary Report - Technical professional summary
-    5. Data Quality - Quarantine and incomplete data flags
+    1. All Degraded Cells - All degraded cells for all KPIs
+    2. All Anomalies - All anomaly types
+    3. Clean Normal Cells - Normal cells excluding degraded/anomaly cells
+    4. Cells Not Calculated - Quarantine and incomplete rows
     
     Args:
         output_df: Output DataFrame with degraded cells
@@ -202,45 +180,21 @@ def save_excel_results(
     
     try:
         with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
-            # Sheet 1: Combined Degraded Cells
-            if output_df is not None and not output_df.empty:
-                output_df.to_excel(writer, sheet_name='Combined Degraded', index=False)
-                log_msg(f"Sheet 'Combined Degraded': {output_df.shape[0]} records")
-            
-            # Sheet 2: Clean Cells (Original data without degraded)
-            if clean_cells_df is not None and not clean_cells_df.empty:
-                clean_cells_df.to_excel(writer, sheet_name='Clean Cells', index=False)
-                log_msg(f"Sheet 'Clean Cells': {clean_cells_df.shape[0]} normal cell records")
-            
-            # Sheet 3: Anomalies
-            if anomalies_df is not None and not anomalies_df.empty:
-                anomalies_df.to_excel(writer, sheet_name='Anomalies', index=False)
-                log_msg(f"Sheet 'Anomalies': {anomalies_df.shape[0]} anomaly records")
-            
-            # Sheet 4: Summary Report (Technical Professional)
-            if summary_df is not None and not summary_df.empty:
-                summary_df.to_excel(writer, sheet_name='Summary Report', index=False)
-                log_msg(f"Sheet 'Summary Report': {summary_df.shape[0]} KPI summaries")
-            
-            # Sheet 5: Data Quality
-            dq_data = []
-            if quarantine_df is not None and not quarantine_df.empty:
-                dq_data.append({
-                    'Category': 'Quarantine',
-                    'Description': 'Invalid counter values flagged',
-                    'Count': quarantine_df.shape[0]
-                })
-            if incomplete_df is not None and not incomplete_df.empty:
-                dq_data.append({
-                    'Category': 'Incomplete Cells',
-                    'Description': 'Rows with missing/insufficient data',
-                    'Count': incomplete_df.shape[0]
-                })
-            
-            if dq_data:
-                dq_df = pd.DataFrame(dq_data)
-                dq_df.to_excel(writer, sheet_name='Data Quality', index=False)
-                log_msg(f"Sheet 'Data Quality': {len(dq_data)} data quality issues")
+            degraded_out = output_df if output_df is not None else pd.DataFrame()
+            anomalies_out = anomalies_df if anomalies_df is not None else pd.DataFrame()
+            clean_out = remove_anomaly_cells(clean_cells_df, anomalies_df)
+            excluded_out = combine_not_calculated_cells(quarantine_df, incomplete_df)
+
+            sheet_outputs = [
+                ("All Degraded Cells", degraded_out),
+                ("All Anomalies", anomalies_out),
+                ("Clean Normal Cells", clean_out),
+                ("Cells Not Calculated", excluded_out),
+            ]
+
+            for sheet_name, df in sheet_outputs:
+                date_first(df).to_excel(writer, sheet_name=sheet_name, index=False)
+                log_msg(f"Sheet '{sheet_name}': {df.shape[0]} records")
         
         log_msg(f"Excel report saved: {excel_file_path}")
         return True

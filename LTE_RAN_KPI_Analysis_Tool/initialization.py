@@ -141,9 +141,9 @@ class LTEKPIAnalyzerApp:
         baseline_frame = ttk.Frame(settings_frame)
         baseline_frame.grid(row=1, column=1, columnspan=3, sticky="w", padx=5, pady=5)
         
-        ttk.Radiobutton(baseline_frame, text="Last Week (7-day)", variable=self.baseline_mode, 
+        ttk.Radiobutton(baseline_frame, text="Same weekdays last week only", variable=self.baseline_mode, 
                         value=BASELINE_MODE_LAST_WEEK).pack(side="left", padx=5)
-        ttk.Radiobutton(baseline_frame, text="4-Week Rolling Avg", variable=self.baseline_mode,
+        ttk.Radiobutton(baseline_frame, text="Same weekdays last 4 weeks", variable=self.baseline_mode,
                         value=BASELINE_MODE_4WEEK_AVG).pack(side="left", padx=5)
         ttk.Radiobutton(baseline_frame, text="Custom Range", variable=self.baseline_mode,
                         value=BASELINE_MODE_CUSTOM).pack(side="left", padx=5)
@@ -532,7 +532,15 @@ class LTEKPIAnalyzerApp:
         if self.output_df is None or self.output_df.empty:
             messagebox.showwarning("No Results", "No degraded cells found. Run analysis first.")
             return
-        show_trend_dashboard(self.root, self.original_df, self.output_df, self.degraded_cell_ids, self.selected_kpi.get(), self.log)
+        show_trend_dashboard(
+            self.root,
+            self.original_df,
+            self.output_df,
+            self.degraded_cell_ids,
+            self.selected_kpi.get(),
+            self.baseline_mode.get(),
+            self.log,
+        )
     
     # ============================================================
     # Export Methods

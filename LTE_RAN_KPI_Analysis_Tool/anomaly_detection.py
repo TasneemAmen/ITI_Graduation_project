@@ -33,6 +33,13 @@ from clean_excel_and_helpers import (
 )
 
 
+def date_first(df):
+    """Return a view/copy with Date as the first column when present."""
+    if df is None or DATE_COL not in df.columns:
+        return df
+    return df[[DATE_COL] + [col for col in df.columns if col != DATE_COL]]
+
+
 # ------------------------------------------------------------
 # Historical baseline computation (same-weekday matching)
 # ------------------------------------------------------------
@@ -129,10 +136,8 @@ def detect_kpi_anomalies_last_day(
     Args:
         df: Input DataFrame with all cell data (must include DATE_COL and
             CELL_ID_COLS, plus the KPI columns defined in KPI_CONFIGS).
-        output_path: Path to save the anomalies file. If ends with '.xlsx',
-            saves a 4-sheet workbook (All_Anomalies, Zero_Anomalies,
-            Spike_Anomalies, Summary). If ends with '.csv', saves a single
-            CSV. If None, the DataFrame is returned but not saved.
+        output_path: Path to save one file containing all anomaly types.
+            If None, the DataFrame is returned but not saved.
         lookback_weeks: Number of weeks back to look for the same weekday.
             Default 4 (matches 4week_rolling_avg baseline mode).
             Use 1 to match last_week baseline mode.
@@ -490,21 +495,21 @@ def detect_kpi_anomalies_last_day(
 # ------------------------------------------------------------
 def _save_anomalies_to_file(anomalies_df, output_path, last_date,
                             lookback_weeks, baseline_mode_label, log_msg):
-    """Save anomalies DataFrame to Excel (4 sheets) or CSV."""
+    """Save anomalies DataFrame to one Excel sheet or CSV."""
 
     if output_path.endswith(".xlsx"):
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
 
             # Sheet 1: All anomalies
-            anomalies_df.to_excel(writer, sheet_name="All_Anomalies", index=False)
+            date_first(anomalies_df).to_excel(writer, sheet_name="All_Anomalies", index=False)
 
             # Sheet 2: Zero anomalies only
             zero_df = anomalies_df[anomalies_df["Anomaly_Type"] == "Zero"]
-            zero_df.to_excel(writer, sheet_name="Zero_Anomalies", index=False)
+            date_first(zero_df).to_excel(writer, sheet_name="Zero_Anomalies", index=False)
 
             # Sheet 3: Spike anomalies only
             spike_df = anomalies_df[anomalies_df["Anomaly_Type"] == "Spike"]
-            spike_df.to_excel(writer, sheet_name="Spike_Anomalies", index=False)
+            date_first(spike_df).to_excel(writer, sheet_name="Spike_Anomalies", index=False)
 
             # Sheet 4: Summary
             summary_data = {
@@ -547,10 +552,10 @@ def _save_anomalies_to_file(anomalies_df, output_path, last_date,
                 )
 
             summary_df = pd.DataFrame(summary_data)
-            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+            date_first(summary_df).to_excel(writer, sheet_name="Summary", index=False)
 
             # Write KPI breakdown starting 3 rows below summary
-            kpi_breakdown.to_excel(
+            date_first(kpi_breakdown).to_excel(
                 writer, sheet_name="Summary", index=False,
                 startrow=4, startcol=0,
             )
@@ -559,10 +564,10 @@ def _save_anomalies_to_file(anomalies_df, output_path, last_date,
         log_msg(f"   Sheets: All_Anomalies, Zero_Anomalies, Spike_Anomalies, Summary")
 
     elif output_path.endswith(".csv"):
-        anomalies_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+        date_first(anomalies_df).to_csv(output_path, index=False, encoding="utf-8-sig")
         log_msg(f"\n✅ Anomalies CSV saved to: {output_path}")
 
     else:
         # Default to CSV
-        anomalies_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+        date_first(anomalies_df).to_csv(output_path, index=False, encoding="utf-8-sig")
         log_msg(f"\n✅ Anomalies saved to: {output_path}")
