@@ -419,7 +419,7 @@ def show_dashboard(parent_window, output_df, summary_df, analysis_mode, selected
         metrics_frame.columnconfigure(i, weight=1)
     
     # Charts
-    fig1 = Figure(figsize=(5, 7), dpi=100)
+    fig1 = Figure(figsize=(8, 6), dpi=100)
     ax1 = fig1.add_subplot(111)
     
     if analysis_mode == "all" and summary_df is not None and "degraded_cells_count" in summary_df.columns:
@@ -441,7 +441,7 @@ def show_dashboard(parent_window, output_df, summary_df, analysis_mode, selected
     canvas1.draw()
     canvas1.get_tk_widget().pack(fill="both", expand=True)
     
-    fig2 = Figure(figsize=(8, 4), dpi=100)
+    fig2 = Figure(figsize=(8, 6), dpi=100)
     ax2 = fig2.add_subplot(111)
     
     if output_df is not None and not output_df.empty:
