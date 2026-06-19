@@ -5,13 +5,7 @@ __pycache__/
 .venv/
 venv/
 
-# Generated analysis outputs
-*_degraded.csv
-*_counter_quarantine.csv
-*_incomplete_cells.csv
-all_kpis_combined.csv
-summary_report.csv
-data_quality_*.csv
+
 
 # Virtual environments
 venv/
@@ -21,15 +15,8 @@ venv/
 .vscode/
 .idea/
 
-# Jupyter
-.ipynb_checkpoints/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Reports
-*.xlsx
-*.csv
-*.docx
-*.pdf
