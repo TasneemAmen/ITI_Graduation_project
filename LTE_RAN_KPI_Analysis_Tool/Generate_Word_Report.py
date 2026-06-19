@@ -179,24 +179,28 @@ def generate_word_report(output_df, summary_df, analysis_mode, selected_kpi, bas
         if analysis_mode == "all" and summary_df is not None and not summary_df.empty:
             doc.add_heading('KPI Analysis Summary', level=1)
             
-            # Define columns for the comprehensive table
-            table_cols = ['kpi_name', 'degraded_cells_count', 'max_degradation_%', 
-                         'threshold_%', 'enhancement_after_removing_degraded_%']
+            # Columns from summary_df data
+            data_cols = ['kpi_name', 'degraded_cells_count', 'max_degradation_%', 'threshold_%']
+            available_data_cols = [c for c in data_cols if c in summary_df.columns]
             
-            # Calculate enhancement potential for each KPI
-            enhancement_values = {}
-            if original_df is not None and degraded_cell_ids:
-                for _, row in summary_df.iterrows():
-                    kpi_name = row.get('kpi_name')
-                    enhancement_values[kpi_name] = calculate_enhancement_potential(
-                        original_df, degraded_cell_ids, kpi_name
-                    )
+            # Enhancement is always calculated separately (not from summary_df)
+            always_include_enhancement = original_df is not None and degraded_cell_ids
             
-            available_cols = [c for c in table_cols if c in summary_df.columns]
+            # Total columns = data columns + enhancement (if available)
+            all_table_cols = available_data_cols + (['enhancement_potential_%'] if always_include_enhancement else [])
             
-            if available_cols:
+            if all_table_cols:
+                # Calculate enhancement potential for each KPI
+                enhancement_values = {}
+                if always_include_enhancement:
+                    for _, row in summary_df.iterrows():
+                        kpi_name = row.get('kpi_name')
+                        enhancement_values[kpi_name] = calculate_enhancement_potential(
+                            original_df, degraded_cell_ids, kpi_name
+                        )
+                
                 # Create table with header row
-                table = doc.add_table(rows=1, cols=len(available_cols))
+                table = doc.add_table(rows=1, cols=len(all_table_cols))
                 table.style = 'Table Grid'
                 
                 # Format headers
@@ -206,34 +210,34 @@ def generate_word_report(output_df, summary_df, analysis_mode, selected_kpi, bas
                     'degraded_cells_count': 'Degraded Cell Count',
                     'max_degradation_%': 'Max Degradation %',
                     'threshold_%': 'Threshold %',
-                    'enhancement_after_removing_degraded_%': 'Enhancement Potential %'
+                    'enhancement_potential_%': 'Enhancement Potential %'
                 }
-                for i, col in enumerate(available_cols):
+                for i, col in enumerate(all_table_cols):
                     headers[i].text = header_map.get(col, col.replace('_', ' ').title())
                 
                 # Add data rows
                 for _, row in summary_df.iterrows():
                     cells = table.add_row().cells
-                    for i, col in enumerate(available_cols):
-                        val = row.get(col, '')
-                        
-                        if col == 'kpi_name':
-                            cells[i].text = str(val)[:80]
-                        elif col == 'degraded_cells_count':
-                            cells[i].text = str(int(val)) if pd.notna(val) else "N/A"
-                        elif col == 'threshold_%':
-                            cells[i].text = f"{val:.2f}%" if pd.notna(val) else "N/A"
-                        elif col == 'enhancement_after_removing_degraded_%':
+                    for i, col in enumerate(all_table_cols):
+                        if col == 'enhancement_potential_%':
                             # Use calculated enhancement potential
                             kpi_name = row.get('kpi_name')
                             if kpi_name in enhancement_values:
                                 cells[i].text = f"{enhancement_values[kpi_name]:.2f}%"
                             else:
                                 cells[i].text = "N/A"
-                        elif col.endswith('_%'):
-                            cells[i].text = f"{abs(float(val)):.2f}%" if pd.notna(val) else "N/A"
                         else:
-                            cells[i].text = "N/A" if pd.isna(val) else str(val)[:80]
+                            val = row.get(col, '')
+                            if col == 'kpi_name':
+                                cells[i].text = str(val)[:80]
+                            elif col == 'degraded_cells_count':
+                                cells[i].text = str(int(val)) if pd.notna(val) else "N/A"
+                            elif col == 'threshold_%':
+                                cells[i].text = f"{val:.2f}%" if pd.notna(val) else "N/A"
+                            elif col.endswith('_%'):
+                                cells[i].text = f"{abs(float(val)):.2f}%" if pd.notna(val) else "N/A"
+                            else:
+                                cells[i].text = "N/A" if pd.isna(val) else str(val)[:80]
         
         doc.save(save_path)
         log_msg(f"Report saved: {save_path}")

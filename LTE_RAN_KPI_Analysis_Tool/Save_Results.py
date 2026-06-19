@@ -59,7 +59,6 @@ def remove_anomaly_cells(clean_cells_df=None, anomalies_df=None):
 
 def save_csv_results(
     output_df,
-    all_outputs,
     summary_df,
     analysis_mode,
     selected_kpi,
@@ -75,12 +74,14 @@ def save_csv_results(
     
     Args:
         output_df: Output DataFrame with degraded cells
-        all_outputs: Kept for compatibility; per-KPI files are not exported
         summary_df: Summary DataFrame
         analysis_mode: "single" or "all"
         selected_kpi: Currently selected KPI name
         save_path_or_dir: File path (single mode) or directory path (all mode)
         log_callback: Optional logging callback
+        quarantine_df: Quarantined invalid values
+        incomplete_df: Cells with insufficient data
+        anomalies_df: Detected anomalies
         clean_cells_df: Original data without degraded or anomaly cells
         
     Returns:
@@ -94,44 +95,58 @@ def save_csv_results(
         log_msg("ERROR: No output to save")
         return False
     
-    if analysis_mode == "all":
+    try:
+        if analysis_mode == "all":
+            save_dir = save_path_or_dir
+            if not save_dir:
+                return False
+            
+            degraded_out = output_df if output_df is not None else pd.DataFrame()
+            anomalies_out = anomalies_df if anomalies_df is not None else pd.DataFrame()
+            clean_out = remove_anomaly_cells(clean_cells_df, anomalies_df)
+            excluded_out = combine_not_calculated_cells(quarantine_df, incomplete_df)
+
+            # Only save files that actually contain data
+            outputs = [
+                ("all_degraded_cells.csv", degraded_out),
+                ("kpi_summary.csv", summary_df if summary_df is not None else pd.DataFrame()),
+            ]
+            
+            if not anomalies_out.empty:
+                outputs.append(("all_anomalies.csv", anomalies_out))
+            if not clean_out.empty:
+                outputs.append(("clean_normal_cells.csv", clean_out))
+            if not excluded_out.empty:
+                outputs.append(("cells_not_calculated.csv", excluded_out))
+
+            for filename, df in outputs:
+                date_first(df).to_csv(
+                    os.path.join(save_dir, filename),
+                    index=False,
+                    encoding="utf-8-sig"
+                )
+
+            log_msg(f"Saved {len(outputs)} files to: {save_dir}")
+            return True
         
-        # Save to directory
-        save_dir = save_path_or_dir
-        if not save_dir:
+        # Single KPI mode
+        if output_df is None or output_df.empty:
+            log_msg("ERROR: No degraded cells to save")
             return False
         
-        degraded_out = output_df if output_df is not None else pd.DataFrame()
-        anomalies_out = anomalies_df if anomalies_df is not None else pd.DataFrame()
-        clean_out = remove_anomaly_cells(clean_cells_df, anomalies_df)
-        excluded_out = combine_not_calculated_cells(quarantine_df, incomplete_df)
-
-        outputs = [
-            ("all_degraded_cells.csv", degraded_out),
-            ("all_anomalies.csv", anomalies_out),
-            ("clean_normal_cells.csv", clean_out),
-            ("cells_not_calculated.csv", excluded_out),
-        ]
-
-        for filename, df in outputs:
-            date_first(df).to_csv(
-                os.path.join(save_dir, filename),
-                index=False,
-                encoding="utf-8-sig"
-            )
-
-        log_msg(f"Saved 4 files to: {save_dir}")
+        date_first(output_df).to_csv(save_path_or_dir, index=False, encoding="utf-8-sig")
+        log_msg(f"CSV saved: {save_path_or_dir}")
         return True
-    
-    # Single KPI mode
-    if output_df is None or output_df.empty:
-        log_msg("ERROR: No degraded cells to save")
+        
+    except PermissionError:
+        log_msg("ERROR: Permission denied. Check if file is open in another program or folder is read-only.")
         return False
-    
-    date_first(output_df).to_csv(save_path_or_dir, index=False, encoding="utf-8-sig")
-    log_msg(f"CSV saved: {save_path_or_dir}")
-
-    return True
+    except OSError as e:
+        log_msg(f"ERROR: Cannot save file - {e}")
+        return False
+    except Exception as e:
+        log_msg(f"ERROR saving CSV: {str(e)}")
+        return False
 
 
 def save_excel_results(
@@ -147,13 +162,14 @@ def save_excel_results(
     clean_cells_df=None,
 ):
     """
-    Save analysis results to an Excel workbook with four sheets.
+    Save analysis results to an Excel workbook.
     
-    Sheets created:
-    1. All Degraded Cells - All degraded cells for all KPIs
-    2. All Anomalies - All anomaly types
-    3. Clean Normal Cells - Normal cells excluding degraded/anomaly cells
-    4. Cells Not Calculated - Quarantine and incomplete rows
+    Sheets created (only if data exists):
+    1. KPI Summary - Overview of degradation per KPI (All mode)
+    2. All Degraded Cells - Degraded cells with root causes
+    3. All Anomalies - Detected anomaly types
+    4. Clean Normal Cells - Normal cells excluding degraded/anomaly cells
+    5. Cells Not Calculated - Quarantine and incomplete rows
     
     Args:
         output_df: Output DataFrame with degraded cells
@@ -185,20 +201,43 @@ def save_excel_results(
             clean_out = remove_anomaly_cells(clean_cells_df, anomalies_df)
             excluded_out = combine_not_calculated_cells(quarantine_df, incomplete_df)
 
-            sheet_outputs = [
-                ("All Degraded Cells", degraded_out),
-                ("All Anomalies", anomalies_out),
-                ("Clean Normal Cells", clean_out),
-                ("Cells Not Calculated", excluded_out),
-            ]
+            # Build sheet list - ONLY include sheets with actual data
+            sheet_outputs = []
+            
+            # Summary first (most important for management reporting)
+            if summary_df is not None and not summary_df.empty:
+                sheet_outputs.append(("KPI Summary", summary_df))
+            
+            # Degraded cells
+            if not degraded_out.empty:
+                sheet_outputs.append(("All Degraded Cells", degraded_out))
+            
+            # Anomalies - skip if empty
+            if not anomalies_out.empty:
+                sheet_outputs.append(("All Anomalies", anomalies_out))
+            
+            # Clean cells - skip if empty
+            if not clean_out.empty:
+                sheet_outputs.append(("Clean Normal Cells", clean_out))
+            
+            # Excluded cells - skip if empty
+            if not excluded_out.empty:
+                sheet_outputs.append(("Cells Not Calculated", excluded_out))
 
+            # Write sheets
             for sheet_name, df in sheet_outputs:
                 date_first(df).to_excel(writer, sheet_name=sheet_name, index=False)
-                log_msg(f"Sheet '{sheet_name}': {df.shape[0]} records")
+                log_msg(f"  Sheet '{sheet_name}': {df.shape[0]} records")
         
-        log_msg(f"Excel report saved: {excel_file_path}")
+        log_msg(f"Excel saved: {excel_file_path} ({len(sheet_outputs)} sheets)")
         return True
         
+    except PermissionError:
+        log_msg("ERROR: Permission denied. Close the Excel file if it's open and try again.")
+        return False
+    except OSError as e:
+        log_msg(f"ERROR: Cannot save Excel - {e}")
+        return False
     except Exception as e:
         log_msg(f"ERROR saving Excel: {str(e)}")
         return False

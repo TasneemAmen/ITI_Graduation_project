@@ -587,8 +587,9 @@ class LTEKPIAnalyzerApp:
             if not save_dir:
                 return
             
+            # REMOVED: self.all_outputs (no longer needed by save_csv_results)
             success = save_csv_results(
-                self.output_df, self.all_outputs, self.summary_df,
+                self.output_df, self.summary_df,
                 self.analysis_mode, self.selected_kpi.get(), save_dir, self.log,
                 quarantine_df=self.quarantine_df, incomplete_df=self.incomplete_df,
                 anomalies_df=self.anomalies_df, clean_cells_df=self.clean_cells_df,
@@ -601,8 +602,9 @@ class LTEKPIAnalyzerApp:
             save_path = get_save_path(default_name, "CSV files", ".csv")
             
             if save_path:
+                # REMOVED: self.all_outputs
                 success = save_csv_results(
-                    self.output_df, self.all_outputs, self.summary_df,
+                    self.output_df, self.summary_df,
                     self.analysis_mode, self.selected_kpi.get(), save_path, self.log,
                     quarantine_df=self.quarantine_df, incomplete_df=self.incomplete_df,
                     anomalies_df=self.anomalies_df, clean_cells_df=self.clean_cells_df,

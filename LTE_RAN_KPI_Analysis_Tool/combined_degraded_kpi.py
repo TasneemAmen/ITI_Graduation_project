@@ -101,7 +101,6 @@ def analyze_all_kpis(
                 "threshold_%": threshold,
                 "degraded_cells_count": degraded_count,
                 "max_degradation_%": debug.get("max_degradation"),
-                "mean_degradation_%": debug.get("mean_degradation"),
                 "status": "Completed",
                 "error": ""
             })
