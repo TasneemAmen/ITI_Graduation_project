@@ -33,6 +33,12 @@ def analyze_all_kpis(
     """
     Analyze all KPIs defined in KPI_CONFIGS.
     
+    Note: Enhancement Potential is NOT calculated here because it requires
+    the complete set of degraded cell IDs and original data to compute
+    the before/after comparison on the last day. It is calculated on-demand in:
+    - Generate_Word_Report.calculate_enhancement_potential() for reports
+    - Visualization_Functions.calculate_enhancement_potential() for charts
+    
     Args:
         df: Input DataFrame with KPI data
         num_days: Number of days for recent period
@@ -191,37 +197,29 @@ def remove_degraded_cells(
     
     if remove_mode == "all_periods":
         # Remove all data for degraded cells (all dates)
-        # Create a merge key to identify cells to remove
         df["_tmp_key"] = df[cell_id_cols].apply(lambda x: tuple(x), axis=1)
         degraded_cells["_tmp_key"] = degraded_cells[cell_id_cols].apply(lambda x: tuple(x), axis=1)
         
         keys_to_remove = set(degraded_cells["_tmp_key"].tolist())
         clean_df = df[~df["_tmp_key"].isin(keys_to_remove)].drop(columns=["_tmp_key"])
         
-        # Clean up
         degraded_cells = degraded_cells.drop(columns=["_tmp_key"], errors="ignore")
         
     elif remove_mode == "recent_only":
-        # Remove only recent period data for degraded cells
-        # Need to identify recent period from degraded_df
         if "recent_period" in degraded_df.columns:
             recent_period = degraded_df["recent_period"].iloc[0]
-            # Parse the period string (format: "YYYY-MM-DD to YYYY-MM-DD")
             try:
                 parts = recent_period.split(" to ")
                 recent_start = pd.to_datetime(parts[0])
                 recent_end = pd.to_datetime(parts[1])
                 
-                # Add date column parsing
                 df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
                 
-                # Create merge key
                 df["_tmp_key"] = df[cell_id_cols].apply(lambda x: tuple(x), axis=1)
                 degraded_cells["_tmp_key"] = degraded_cells[cell_id_cols].apply(lambda x: tuple(x), axis=1)
                 
                 keys_to_remove = set(degraded_cells["_tmp_key"].tolist())
                 
-                # Remove only recent period data for degraded cells
                 is_recent = (df[DATE_COL] >= recent_start) & (df[DATE_COL] <= recent_end)
                 is_degraded_cell = df["_tmp_key"].isin(keys_to_remove)
                 
@@ -229,7 +227,6 @@ def remove_degraded_cells(
                 
             except Exception as e:
                 log_msg(f"Warning: Could not parse recent period, falling back to all_periods mode: {e}")
-                # Fallback to all_periods
                 df["_tmp_key"] = df[cell_id_cols].apply(lambda x: tuple(x), axis=1)
                 degraded_cells["_tmp_key"] = degraded_cells[cell_id_cols].apply(lambda x: tuple(x), axis=1)
                 keys_to_remove = set(degraded_cells["_tmp_key"].tolist())
@@ -242,7 +239,6 @@ def remove_degraded_cells(
             clean_df = df[~df["_tmp_key"].isin(keys_to_remove)].drop(columns=["_tmp_key"])
             
     else:
-        # Default to all_periods
         df["_tmp_key"] = df[cell_id_cols].apply(lambda x: tuple(x), axis=1)
         degraded_cells["_tmp_key"] = degraded_cells[cell_id_cols].apply(lambda x: tuple(x), axis=1)
         keys_to_remove = set(degraded_cells["_tmp_key"].tolist())
@@ -275,9 +271,6 @@ def remove_degraded_cells_by_kpi(
     """
     Remove degraded cells from dataset based on specific KPIs.
     
-    This is a convenience function that takes the outputs_dict from analyze_all_kpis
-    and removes cells degraded in specified KPIs.
-    
     Args:
         df: Original DataFrame with all cell data
         degraded_outputs_dict: Dictionary of KPI name -> degraded cells DataFrame
@@ -299,7 +292,6 @@ def remove_degraded_cells_by_kpi(
     if kpi_names is None:
         kpi_names = list(degraded_outputs_dict.keys())
     
-    # Combine degraded cells from specified KPIs
     degraded_frames = []
     for kpi_name in kpi_names:
         if kpi_name in degraded_outputs_dict:
@@ -312,21 +304,17 @@ def remove_degraded_cells_by_kpi(
         return df.copy(), 0, {"total_removed": 0, "by_kpi": {}}
     
     combined_degraded = pd.concat(degraded_frames, ignore_index=True)
-    
-    # Get unique degraded cells across all KPIs
     unique_degraded_cells = combined_degraded[cell_id_cols].drop_duplicates()
     
-    # Remove using the main function
     clean_df, removed_count, removal_summary = remove_degraded_cells(
         df=df,
         degraded_df=combined_degraded,
         remove_mode=remove_mode,
-        kpi_filter=None,  # Already filtered
+        kpi_filter=None,
         cell_id_cols=cell_id_cols,
         log_callback=log_callback
     )
     
-    # Add per-KPI breakdown
     kpi_breakdown = {}
     for kpi_name in kpi_names:
         if kpi_name in degraded_outputs_dict:
@@ -351,9 +339,6 @@ def get_clean_data_for_dashboard(
     """
     Complete workflow: Analyze all KPIs, identify degraded cells, and return clean data.
     
-    This is a convenience function that combines analyze_all_kpis and remove_degraded_cells
-    for easy dashboard integration.
-    
     Args:
         df: Original DataFrame with all cell data
         num_days: Number of days for recent period
@@ -376,7 +361,6 @@ def get_clean_data_for_dashboard(
     
     log_msg("Starting clean data generation for dashboard...")
     
-    # Analyze all KPIs
     combined_degraded, outputs_dict, summary_df, quarantine_df, incomplete_df = analyze_all_kpis(
         df=df,
         num_days=num_days,
@@ -385,11 +369,9 @@ def get_clean_data_for_dashboard(
         log_callback=log_msg
     )
     
-    # Filter KPIs if specified
     if kpi_names:
         combined_degraded = combined_degraded[combined_degraded["selected_kpi_name"].isin(kpi_names)]
     
-    # Remove degraded cells
     clean_df, removed_count, removal_summary = remove_degraded_cells(
         df=df,
         degraded_df=combined_degraded,
@@ -425,9 +407,6 @@ def get_clean_sheet_without_degraded_cells(
     2. Collects ALL unique degraded cells across all KPIs
     3. Returns the original sheet structure with ONLY normal (non-degraded) cells
     
-    The output has the SAME structure as the input - just with degraded cells filtered out.
-    Use this for dashboard visualizations where you want to show trends without degraded cells.
-    
     Args:
         df: Original DataFrame with all cell data (full sheet structure)
         num_days: Number of days for recent period
@@ -450,7 +429,6 @@ def get_clean_sheet_without_degraded_cells(
     log_msg("Analyzing all 13 KPIs to identify degraded cells...")
     log_msg("=" * 50)
     
-    # Step 1: Analyze all KPIs
     combined_degraded, outputs_dict, summary_df, quarantine_df, incomplete_df = analyze_all_kpis(
         df=df,
         num_days=num_days,
@@ -459,7 +437,6 @@ def get_clean_sheet_without_degraded_cells(
         log_callback=log_msg
     )
     
-    # Step 2: Get unique degraded cells across ALL KPIs
     if combined_degraded.empty:
         log_msg("No degraded cells found - returning original sheet")
         return {
@@ -479,33 +456,26 @@ def get_clean_sheet_without_degraded_cells(
             }
         }
     
-    # Get unique degraded cells (a cell is degraded if it's degraded in ANY KPI)
     degraded_cells_list = combined_degraded[CELL_ID_COLS].drop_duplicates()
     n_degraded = len(degraded_cells_list)
     
     log_msg(f"Found {n_degraded} unique degraded cells across all KPIs")
     
-    # Step 3: Create clean sheet by removing ALL degraded cells
-    # Use tuple keys for matching
     df_copy = df.copy()
     df_copy["_tmp_key"] = df_copy[CELL_ID_COLS].apply(lambda x: tuple(x), axis=1)
     degraded_cells_list["_tmp_key"] = degraded_cells_list[CELL_ID_COLS].apply(lambda x: tuple(x), axis=1)
     
     keys_to_remove = set(degraded_cells_list["_tmp_key"].tolist())
     
-    # Filter out degraded cells
     clean_sheet = df_copy[~df_copy["_tmp_key"].isin(keys_to_remove)].drop(columns=["_tmp_key"])
     
-    # Clean up
     degraded_cells_list = degraded_cells_list.drop(columns=["_tmp_key"], errors="ignore")
     
-    # Step 4: Calculate summary statistics
     original_cells = len(df[CELL_ID_COLS].drop_duplicates())
     remaining_cells = len(clean_sheet[CELL_ID_COLS].drop_duplicates())
     original_records = len(df)
     remaining_records = len(clean_sheet)
     
-    # Degraded cells per KPI
     degraded_per_kpi = {}
     for kpi_name, kpi_df in outputs_dict.items():
         if kpi_df is not None and not kpi_df.empty:
@@ -552,10 +522,6 @@ def export_clean_sheet_to_excel(
     """
     Analyze all KPIs, remove degraded cells, and export clean sheet to Excel.
     
-    This is a convenience function that:
-    1. Gets clean sheet without degraded cells
-    2. Exports to Excel with optional summary sheets
-    
     Args:
         df: Original DataFrame with all cell data
         num_days: Number of days for recent period
@@ -572,7 +538,6 @@ def export_clean_sheet_to_excel(
         if log_callback:
             log_callback(msg)
     
-    # Get clean sheet
     result = get_clean_sheet_without_degraded_cells(
         df=df,
         num_days=num_days,
@@ -584,20 +549,14 @@ def export_clean_sheet_to_excel(
     clean_sheet = result["clean_sheet"]
     summary = result["summary"]
     
-    # Export to Excel
     if include_summary:
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # Clean data sheet
             date_first(clean_sheet).to_excel(writer, sheet_name='Clean_Data', index=False)
-            
-            # Degraded cells list
             date_first(result["degraded_cells_list"]).to_excel(writer, sheet_name='Degraded_Cells', index=False)
             
-            # Summary sheet
             summary_df = pd.DataFrame([summary])
             date_first(summary_df).to_excel(writer, sheet_name='Summary', index=False)
             
-            # Degraded per KPI
             degraded_per_kpi = result["analysis_results"]["degraded_per_kpi"]
             kpi_summary = pd.DataFrame([
                 {"KPI": kpi, "Degraded_Cells": count}

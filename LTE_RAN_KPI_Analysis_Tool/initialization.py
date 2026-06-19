@@ -388,7 +388,7 @@ class LTEKPIAnalyzerApp:
             self.log("Running anomaly detection...")
             self.anomalies_df = detect_kpi_anomalies_last_day(
                 df=df,
-                output_path=None,      # save later through Save_Results
+                output_path=None,
                 lookback_weeks=4,
                 log_callback=self.log,
             )
@@ -467,21 +467,16 @@ class LTEKPIAnalyzerApp:
             self.summary_df = summary_df
             self.quarantine_df = quarantine_df
             self.incomplete_df = incomplete_df
-            # ============================================
+            
             # Detect anomalies
-            # ============================================
             self.log("Running anomaly detection...")
-
             self.anomalies_df = detect_kpi_anomalies_last_day(
                 df=df,
-                output_path=None,      # save later through Save_Results
+                output_path=None,
                 lookback_weeks=4,
                 log_callback=self.log,
             )
-
-            self.log(
-                f"Anomalies found: {len(self.anomalies_df)}"
-            )
+            self.log(f"Anomalies found: {len(self.anomalies_df)}")
 
             self.analysis_mode = "all"
             
@@ -564,10 +559,18 @@ class LTEKPIAnalyzerApp:
         if not save_path:
             return
         
+        # Pass degraded_cell_ids to the report generator
         success = generate_word_report(
-            self.output_df, self.summary_df, self.analysis_mode, 
-            self.selected_kpi.get(), self.baseline_mode.get(),
-            self.enable_significance_test.get(), save_path, self.log
+            self.output_df,
+            self.summary_df,
+            self.analysis_mode,
+            self.selected_kpi.get(),
+            self.baseline_mode.get(),
+            self.enable_significance_test.get(),
+            save_path,
+            self.original_df,
+            self.degraded_cell_ids,  # NEW: Pass degraded cell IDs
+            self.log,
         )
         
         if success:
@@ -637,4 +640,3 @@ class LTEKPIAnalyzerApp:
         
         if success:
             messagebox.showinfo("Exported", f"Excel report exported:\n{save_path}")
-

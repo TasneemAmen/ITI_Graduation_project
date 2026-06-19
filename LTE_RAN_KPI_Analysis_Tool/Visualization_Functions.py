@@ -271,33 +271,21 @@ def melt_kpis_for_trend(df, value_name="KPI_Value"):
     """
     Melt DataFrame from wide to long format for trend visualization.
     
-    This converts KPI columns into rows, creating a format suitable for
-    dashboard trend charts where KPI is a slicer/filter dimension.
-    
     Args:
         df: DataFrame in wide format (one column per KPI)
         value_name: Name for the value column in melted output
         
     Returns:
-        DataFrame in long format with columns:
-        - Cell identifiers (eNodeB Name, Cell Name, LocalCell Id)
-        - Date
-        - KPI (short name)
-        - KPI_Value
-        - Category
+        DataFrame in long format
     """
-    # First, filter to only KPI columns
     df_filtered = filter_columns_for_kpis(df, include_cell_cols=True, include_date_col=True)
     
-    # Create mapping from target_column to short_name and category
     col_to_kpi = {kpi["target_column"]: kpi["short_name"] for kpi in KPI_LIST}
     col_to_category = {kpi["target_column"]: kpi["category"] for kpi in KPI_LIST}
     
-    # Identify columns to melt
     id_vars = list(CELL_ID_COLS) + [DATE_COL]
     value_vars = [col for col in df_filtered.columns if col not in id_vars]
     
-    # Melt the DataFrame
     melted = df_filtered.melt(
         id_vars=id_vars,
         value_vars=value_vars,
@@ -305,18 +293,75 @@ def melt_kpis_for_trend(df, value_name="KPI_Value"):
         value_name=value_name
     )
     
-    # Map to short names
     melted["KPI"] = melted["KPI_Column"].map(col_to_kpi)
     melted["Category"] = melted["KPI_Column"].map(col_to_category)
-    
-    # Drop the original column name
     melted = melted.drop(columns=["KPI_Column"])
     
-    # Reorder columns
     col_order = list(CELL_ID_COLS) + [DATE_COL, "KPI", "Category", value_name]
     melted = melted[[c for c in col_order if c in melted.columns]]
     
     return melted
+
+
+def calculate_enhancement_potential(original_df, degraded_cell_ids, selected_kpi_col, bad_direction):
+    """
+    Calculate the potential KPI enhancement if degraded cells are removed.
+    
+    Args:
+        original_df: Original DataFrame with all KPI data
+        degraded_cell_ids: Set of (Site, Cell) tuples for degraded cells
+        selected_kpi_col: Target KPI column name
+        bad_direction: "high" or "low"
+        
+    Returns:
+        Enhancement potential as percentage (positive = improvement)
+    """
+    if original_df is None or original_df.empty or not degraded_cell_ids:
+        return 0.0
+
+    if DATE_COL not in original_df.columns or selected_kpi_col not in original_df.columns:
+        return 0.0
+
+    if SITE_COL not in original_df.columns or CELL_COL not in original_df.columns:
+        return 0.0
+
+    df = original_df.copy()
+    df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+    df = df.dropna(subset=[DATE_COL, selected_kpi_col])
+    df[selected_kpi_col] = pd.to_numeric(df[selected_kpi_col], errors="coerce")
+
+    if df.empty:
+        return 0.0
+
+    # Get last day data
+    last_day = df[DATE_COL].max()
+    last_day_df = df[df[DATE_COL] == last_day]
+
+    if last_day_df.empty:
+        return 0.0
+
+    # Before: average with ALL cells on last day
+    before_avg = last_day_df[selected_kpi_col].mean()
+
+    # After: average without degraded cells on last day
+    mask = last_day_df.set_index([SITE_COL, CELL_COL]).index.isin(degraded_cell_ids)
+    clean_df = last_day_df[~mask]
+
+    if clean_df.empty:
+        return 0.0
+
+    after_avg = clean_df[selected_kpi_col].mean()
+
+    # Calculate enhancement based on bad direction
+    if abs(before_avg) < 1e-10:
+        return 0.0
+
+    if bad_direction == "high":
+        # High is bad (e.g., drop rate): improvement = decrease in value
+        return ((before_avg - after_avg) / before_avg) * 100
+    else:
+        # Low is bad (e.g., throughput): improvement = increase in value
+        return ((after_avg - before_avg) / before_avg) * 100
 
 
 # ============================================================
@@ -374,14 +419,20 @@ def show_dashboard(parent_window, output_df, summary_df, analysis_mode, selected
         metrics_frame.columnconfigure(i, weight=1)
     
     # Charts
-    fig1 = Figure(figsize=(5, 4), dpi=100)
+    fig1 = Figure(figsize=(5, 7), dpi=100)
     ax1 = fig1.add_subplot(111)
     
     if analysis_mode == "all" and summary_df is not None and "degraded_cells_count" in summary_df.columns:
         plot_df = summary_df.sort_values("degraded_cells_count", ascending=False).head(12)
-        ax1.bar(plot_df["kpi_name"], plot_df["degraded_cells_count"])
+        bars = ax1.bar(plot_df["kpi_name"], plot_df["degraded_cells_count"], color='steelblue')
         ax1.set_title("Degraded Cells per KPI")
         ax1.tick_params(axis="x", rotation=70)
+        
+        for bar in bars:
+            height = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{int(height)}',
+                    ha='center', va='bottom', fontsize=9, fontweight='bold')
     else:
         ax1.text(0.5, 0.5, "No data", ha="center")
     
@@ -390,15 +441,29 @@ def show_dashboard(parent_window, output_df, summary_df, analysis_mode, selected
     canvas1.draw()
     canvas1.get_tk_widget().pack(fill="both", expand=True)
     
-    fig2 = Figure(figsize=(5, 4), dpi=100)
+    fig2 = Figure(figsize=(6, 4), dpi=100)
     ax2 = fig2.add_subplot(111)
     
-    if output_df is not None and not output_df.empty and "main_root_cause_category" in output_df.columns:
-        causes = output_df["main_root_cause_category"].value_counts().head(10).sort_values()
-        ax2.barh(causes.index, causes.values)
-        ax2.set_title("Root Causes")
+    if output_df is not None and not output_df.empty:
+        if "main_root_cause_category" in output_df.columns:
+            causes = output_df["main_root_cause_category"].value_counts().head(10)
+            if not causes.empty:
+                causes = causes.sort_values()
+                bars = ax2.barh(causes.index, causes.values, color='coral')
+                ax2.set_title("Root Causes Distribution")
+                ax2.set_xlabel("Count")
+                
+                for bar in bars:
+                    width = bar.get_width()
+                    ax2.text(width, bar.get_y() + bar.get_height()/2.,
+                            f' {int(width)}',
+                            ha='left', va='center', fontsize=9, fontweight='bold')
+            else:
+                ax2.text(0.5, 0.5, "No root cause data", ha="center", va="center")
+        else:
+            ax2.text(0.5, 0.5, "No root cause column", ha="center", va="center")
     else:
-        ax2.text(0.5, 0.5, "No data", ha="center")
+        ax2.text(0.5, 0.5, "No data", ha="center", va="center")
     
     fig2.tight_layout()
     canvas2 = FigureCanvasTkAgg(fig2, master=right_chart)
@@ -416,7 +481,7 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         output_df: Output DataFrame with degraded cells
         degraded_cell_ids: Set of degraded cell IDs
         selected_kpi: Currently selected KPI name
-        baseline_mode: Baseline mode used for enhancement comparison
+        baseline_mode: Baseline mode used (kept for compatibility, not used in enhancement calc)
         log_callback: Optional logging callback
     """
     if original_df is None:
@@ -452,20 +517,17 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         if target_col in original_df.columns:
             kpi_target_cols.append(target_col)
     
-    # If no KPI columns found, fall back to numeric columns
     if not kpi_target_cols:
         numeric_cols = original_df.select_dtypes(include=[np.number]).columns.tolist()
         numeric_cols = [c for c in numeric_cols if c not in [SITE_COL, CELL_COL, LOCAL_CELL_COL]]
         kpi_target_cols = numeric_cols[:30]
     
-    # Get current KPI column
     config = KPI_CONFIGS.get(selected_kpi, {})
     target_kpi = config.get("target_kpi", "")
     kpi_col = find_matching_column(original_df, target_kpi)
 
     trend_kpi = tk.StringVar(value=kpi_col if kpi_col else (kpi_target_cols[0] if kpi_target_cols else ""))
     
-    # Create dropdown with only 13 KPIs
     kpi_combo = ttk.Combobox(controls, textvariable=trend_kpi, values=kpi_target_cols, state="readonly", width=50)
     kpi_combo.pack(side="left", padx=5)
     
@@ -491,12 +553,12 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         df = df.dropna(subset=[DATE_COL])
         df[col] = clean_numeric_series(df[col])
         
-        # Before: all cells
+        # Before: all cells daily average
         daily_before = df.groupby(DATE_COL)[col].mean().reset_index()
         daily_before.columns = ['Date', 'Average']
         
-        # After: remove degraded cells
-        if degraded_cell_ids:
+        # After: remove degraded cells daily average
+        if degraded_cell_ids and SITE_COL in df.columns and CELL_COL in df.columns:
             mask = df.set_index([SITE_COL, CELL_COL]).index.isin(degraded_cell_ids)
             df_clean = df[~mask]
             daily_after = df_clean.groupby(DATE_COL)[col].mean().reset_index() if len(df_clean) > 0 else daily_before.copy()
@@ -508,34 +570,11 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
             ttk.Label(chart_frame, text="No data to plot").pack()
             return
         
-        last_day = daily_before['Date'].max()
-        last_day_avg = daily_before.loc[daily_before['Date'] == last_day, 'Average'].mean()
-        
-        baseline_label = ""
-        baseline_avg = np.nan
-        if baseline_mode == "last_week":
-            baseline_day = last_day - pd.Timedelta(days=7)
-            baseline_vals = daily_before.loc[daily_before['Date'] == baseline_day, 'Average']
-            if not baseline_vals.empty:
-                baseline_avg = baseline_vals.mean()
-            baseline_label = "Same weekday last week only"
-        else:
-            lookback_dates = [last_day - pd.Timedelta(days=7 * week) for week in range(1, 5)]
-            baseline_vals = [daily_before.loc[daily_before['Date'] == d, 'Average'].mean()
-                             for d in lookback_dates
-                             if not daily_before.loc[daily_before['Date'] == d, 'Average'].empty]
-            if baseline_vals:
-                baseline_avg = float(np.median(baseline_vals))
-            baseline_label = "Same weekday over last 4 weeks"
-        
+        # Calculate enhancement potential using the centralized function
         bad_direction = get_kpi_bad_direction(col, selected_kpi)
-        if pd.notna(baseline_avg) and abs(baseline_avg) > 1e-10:
-            if bad_direction == "high":
-                enhancement_ratio = abs((baseline_avg - last_day_avg) / baseline_avg) * 100
-            else:
-                enhancement_ratio = abs((last_day_avg - baseline_avg) / baseline_avg) * 100
-        else:
-            enhancement_ratio = 0
+        enhancement_potential = calculate_enhancement_potential(
+            original_df, degraded_cell_ids, col, bad_direction
+        )
         
         fig = Figure(figsize=(12, 5), dpi=100)
         ax = fig.add_subplot(111)
@@ -557,8 +596,7 @@ def show_trend_dashboard(parent_window, original_df, output_df, degraded_cell_id
         ax.set_xlabel('Date')
         ax.set_ylabel(col[:40])
         ax.set_title(
-            f'{col[:40]} - Daily Trend (Last day vs {baseline_label}, ' \
-            f'Enhancement: {enhancement_ratio:.2f}%)'
+            f'{col[:40]} - Daily Trend (Enhancement Potential: {enhancement_potential:.2f}%)'
         )
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -646,7 +684,7 @@ def show_kpi_slicer_window(parent_window, original_df, degraded_df=None, log_cal
                 break
     
     kpi_combo.bind("<<ComboboxSelected>>", update_info)
-    update_info()  # Initial update
+    update_info()
     
     # Chart Frame
     chart_frame = ttk.LabelFrame(main_frame, text="KPI Trend", padding=10)
@@ -672,7 +710,6 @@ def show_kpi_slicer_window(parent_window, original_df, degraded_df=None, log_cal
         df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors='coerce')
         df = df.dropna(subset=[DATE_COL])
         
-        # Calculate daily average
         daily_avg = df.groupby(DATE_COL)[target_col].mean().reset_index()
         daily_avg.columns = ['Date', 'Average']
         
@@ -704,7 +741,7 @@ def show_kpi_slicer_window(parent_window, original_df, degraded_df=None, log_cal
     btn_frame.pack(fill="x", pady=5)
     ttk.Button(btn_frame, text="Show Trend", command=draw_kpi_chart).pack(side="left", padx=5)
     
-    draw_kpi_chart()  # Initial draw
+    draw_kpi_chart()
 
 
 # ============================================================

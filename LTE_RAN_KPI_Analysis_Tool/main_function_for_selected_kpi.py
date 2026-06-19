@@ -552,6 +552,9 @@ def analyze_selected_kpi(
             cause_results = degraded_with_causes.apply(
                 lambda row: find_degradation_causes_row(row, available_related_rules), axis=1)
             degraded_with_causes = pd.concat([degraded_with_causes, cause_results], axis=1)
+
+        if 'main_root_cause_category' not in degraded_with_causes.columns:
+            degraded_with_causes['main_root_cause_category'] = 'Unknown'
     else:
         degraded_with_causes = degraded_cells.copy()
         degraded_with_causes["main_cause_counter_or_kpi"] = "No related counters available in sheet"
@@ -575,7 +578,8 @@ def analyze_selected_kpi(
         "recent_avg_kpi", "baseline_avg_kpi", 
         "kpi_degradation_ratio_%",
         "number_of_detected_causes",
-        "all_detected_causes","main_cause_counter_or_kpi","main_degradation_reason","main_recommended_action","all_recommended_actions"
+        "all_detected_causes", "main_root_cause_category",
+        "main_cause_counter_or_kpi", "main_degradation_reason", "main_recommended_action", "all_recommended_actions"
     ]
     available_final_cols = [c for c in final_cols if c in degraded_with_causes.columns]
     return degraded_with_causes[available_final_cols].copy(), metadata
